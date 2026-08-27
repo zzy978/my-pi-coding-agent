@@ -1,0 +1,45 @@
+{
+  "name": "pi-tui-coding-agent",
+  "version": "0.1.0",
+  "description": "A verifiable, worktree-first TUI coding agent built on Pi",
+  "type": "module",
+  "bin": {
+    "pi-agent-tui": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "dev": "tsx src/cli.ts",
+    "lint": "eslint .",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.3",
+    "@earendil-works/pi-tui": "0.84.3",
+    "chalk": "5.6.2",
+    "minimatch": "10.2.5",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@types/node": "22.19.19",
+    "@vitest/coverage-v8": "4.1.11",
+    "eslint": "9.39.2",
+    "globals": "16.5.0",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.54.0",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}

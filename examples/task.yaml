@@ -1,0 +1,16 @@
+id: add-health-command
+objective: Add a health-check command and document how to use it.
+allowedPaths:
+  - src/**
+  - test/**
+  - README.md
+verify:
+  - command: npm test
+    timeoutMs: 120000
+  - command: npm run check
+    timeoutMs: 120000
+doneWhen:
+  - The health-check command returns a non-zero exit code when a required dependency is unavailable
+  - Unit tests cover both the passing and failing paths
+  - All configured verification commands pass
+
