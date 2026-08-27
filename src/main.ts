@@ -22,6 +22,7 @@ Options:
   -c, --continue          Continue the latest session for the effective workspace
       --no-session        Do not persist the Pi session
       --in-place          Work in the source checkout instead of a managed worktree
+      --unsafe-shell      Enable the unrestricted shell tool (not constrained by allowedPaths)
       --doctor            Check Node, Git, repository, and Pi model configuration
   -h, --help              Show help
   -v, --version           Show version
@@ -76,25 +77,32 @@ export async function run(options: CliOptions): Promise<number> {
       workspace: workspace.workspace,
       getTask: () => task,
       continueSession: options.continueSession,
-      noSession: options.noSession
+      noSession: options.noSession,
+      allowShell: options.unsafeShell
     });
   } catch (error) {
     await discardManagedWorkspace(workspace);
     throw error;
   }
-  if (!runtime.session.model) {
+  if (!runtime.hasAvailableModel) {
     runtime.dispose();
     await discardManagedWorkspace(workspace);
     console.error("No configured Pi model. Run `pi`, use `/login`, then retry or run with --doctor.");
     return 1;
   }
 
-  const app = new CodingAgentTui({
-    runtime,
-    task,
-    workspace,
-    ...(options.task || options.taskFile ? { initialPrompt: task.objective } : {})
-  });
-  app.start();
+  try {
+    const app = new CodingAgentTui({
+      runtime,
+      task,
+      workspace,
+      ...(options.task || options.taskFile ? { initialPrompt: task.objective } : {})
+    });
+    app.start();
+  } catch (error) {
+    runtime.dispose();
+    await discardManagedWorkspace(workspace);
+    throw error;
+  }
   return 0;
 }

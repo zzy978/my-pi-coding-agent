@@ -43,6 +43,11 @@ export class CodingAgentTui {
   private busy = false;
   private shuttingDown = false;
   private unsubscribe?: () => void;
+  private initialPromptTimer: ReturnType<typeof setTimeout> | undefined;
+  private nextTurnId = 0;
+  private activeTurnId: number | undefined;
+  private activePhase: "prompt" | "verification" | undefined;
+  private readonly abortedTurns = new Set<number>();
 
   constructor(private readonly options: TuiAppOptions) {
     const terminal = new ProcessTerminal();
@@ -100,7 +105,9 @@ export class CodingAgentTui {
     this.tui.start();
     const initialPrompt = this.options.initialPrompt;
     if (initialPrompt) {
-      setTimeout(() => {
+      this.initialPromptTimer = setTimeout(() => {
+        this.initialPromptTimer = undefined;
+        if (this.shuttingDown) return;
         void this.runPrompt(initialPrompt).catch((error: unknown) => this.showError(error));
       }, 0);
     }
@@ -232,18 +239,29 @@ export class CodingAgentTui {
   }
 
   private async runPrompt(instruction: string): Promise<void> {
+    if (this.shuttingDown) return;
     if (this.busy) {
       this.addPlain("A turn or verification is already running.", "warning");
       return;
     }
     if (this.options.task.objective === "Interactive coding task") this.options.task.objective = instruction;
     this.addMarkdown(`**You**\n\n${instruction}`);
+    const turnId = ++this.nextTurnId;
+    this.activeTurnId = turnId;
+    this.activePhase = "prompt";
     this.setBusy(true);
     try {
       await this.options.runtime.prompt(formatTaskPrompt(this.options.task, instruction));
+      if (this.shuttingDown || this.abortedTurns.has(turnId) || this.activeTurnId !== turnId) return;
+      this.activePhase = "verification";
       await this.verifyAndReport(true);
     } finally {
-      this.setBusy(false);
+      this.abortedTurns.delete(turnId);
+      if (this.activeTurnId === turnId) {
+        this.activeTurnId = undefined;
+        this.activePhase = undefined;
+        this.setBusy(false);
+      }
     }
   }
 
@@ -304,9 +322,13 @@ export class CodingAgentTui {
       this.addPlain("Nothing is running.", "info");
       return;
     }
+    if (this.activePhase === "verification" || this.activeTurnId === undefined) {
+      this.addPlain("Verification is already running and cannot be aborted safely.", "warning");
+      return;
+    }
+    this.abortedTurns.add(this.activeTurnId);
     this.setStatus("Aborting…");
     await this.options.runtime.abort();
-    this.setBusy(false);
     this.addPlain("Active turn aborted.", "warning");
   }
 
@@ -344,6 +366,11 @@ export class CodingAgentTui {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    if (this.initialPromptTimer) {
+      clearTimeout(this.initialPromptTimer);
+      this.initialPromptTimer = undefined;
+    }
+    if (this.activeTurnId !== undefined) this.abortedTurns.add(this.activeTurnId);
     this.editor.disableSubmit = true;
     try {
       await this.options.runtime.abort();

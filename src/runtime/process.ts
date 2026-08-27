@@ -77,10 +77,39 @@ export async function runProcess(
     let stderrTruncated = false;
     let timedOut = false;
     let settled = false;
+    let forcedSettleTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (exitCode: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forcedSettleTimer) clearTimeout(forcedSettleTimer);
+      resolve({
+        command: displayCommand,
+        exitCode,
+        stdout,
+        stderr,
+        stdoutTruncated,
+        stderrTruncated,
+        timedOut,
+        durationMs: Date.now() - startedAt
+      });
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
       if (child.pid) void terminateProcessTree(child.pid);
+      forcedSettleTimer = setTimeout(() => {
+        if (child.pid && process.platform !== "win32") {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch {
+            // The process may have exited between the deadline and the hard stop.
+          }
+        }
+        finish(null);
+      }, 5_000);
+      forcedSettleTimer.unref();
     }, timeoutMs);
     timer.unref();
 
@@ -98,22 +127,11 @@ export async function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (forcedSettleTimer) clearTimeout(forcedSettleTimer);
       reject(error);
     });
     child.once("exit", (exitCode) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({
-        command: displayCommand,
-        exitCode,
-        stdout,
-        stderr,
-        stdoutTruncated,
-        stderrTruncated,
-        timedOut,
-        durationMs: Date.now() - startedAt
-      });
+      finish(exitCode);
     });
   });
 }

@@ -26,8 +26,6 @@ export async function runVerification(
   task: TaskSpec,
   onCommandStart?: (command: string, index: number, total: number) => void
 ): Promise<VerificationReport> {
-  const changedFiles = await listChangedFiles(workspace);
-  const disallowedChangedFiles = changedFiles.filter((file) => !isAllowedChangedPath(file, task.allowedPaths));
   const commands: VerificationCommandResult[] = [];
 
   for (let index = 0; index < task.verify.length; index += 1) {
@@ -62,6 +60,8 @@ export async function runVerification(
     }
   }
 
+  const changedFiles = await listChangedFiles(workspace);
+  const disallowedChangedFiles = changedFiles.filter((file) => !isAllowedChangedPath(file, task.allowedPaths));
   const configured = task.verify.length > 0;
   const commandsPassed = configured && commands.length === task.verify.length && commands.every((item) => item.status === "passed");
   return {

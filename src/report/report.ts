@@ -20,17 +20,34 @@ function safeName(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "run";
 }
 
+function codeBlock(value: string): string {
+  const longestFence = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestFence + 1));
+  return `${fence}text\n${value || "(no output)"}\n${fence}`;
+}
+
+function inlineCode(value: string): string {
+  const longestFence = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(Math.max(1, longestFence + 1));
+  return `${fence}${value}${fence}`;
+}
+
 function markdown(report: RunReport): string {
   const verification = report.verification;
-  const commandSections = verification.commands.map((item) => `### ${item.status.toUpperCase()}: \`${item.command}\`
+  const commandSections = verification.commands.map((item) => `### ${item.status.toUpperCase()}
 
+- Command: ${inlineCode(item.command)}
 - Exit code: ${item.exitCode ?? "none"}
 - Duration: ${item.durationMs} ms
 - Output truncated: ${item.outputTruncated ? "yes" : "no"}
 
-\`\`\`text
-${(item.stdout || item.stderr || "(no output)").slice(0, 20_000)}
-\`\`\``).join("\n\n");
+#### Standard output
+
+${codeBlock(item.stdout.slice(0, 20_000))}
+
+#### Standard error
+
+${codeBlock(item.stderr.slice(0, 20_000))}`).join("\n\n");
   return `# Coding Agent Run
 
 - Created: ${report.createdAt}

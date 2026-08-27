@@ -7,7 +7,7 @@
 - 在终端里流式显示模型回复、推理状态和并行工具调用。
 - 从自然语言或 YAML/JSON `TaskSpec` 接收任务。
 - 默认从干净的源仓库创建独立 Git worktree 和 `agent/*` 分支。
-- 用 `allowedPaths` 限制写入范围，并保护 `.git`、`.env*` 和 `node_modules`。
+- 对 `write`/`edit` 文件工具强制执行 `allowedPaths`，并在验证后审计全部 Git 变更；`.git`、`.env*` 和 `node_modules` 始终禁止写入。
 - 在每轮模型执行后运行确定性的验证命令。
 - 把任务、变更文件、验证输出和模型/会话信息写入 JSON 与 Markdown 报告。
 - 继续 Pi 会话，或使用不落盘的临时会话。
@@ -48,7 +48,9 @@ Windows PowerShell 示例：
 npm run dev -- D:\projects\my-repo --task "修复解析器并补充回归测试" --verify "npm test"
 ```
 
-默认要求源仓库没有未提交变更，然后创建托管 worktree。只有在明确接受直接修改当前检出目录时才使用 `--in-place`。
+默认要求源仓库没有未提交变更，然后创建托管 worktree。只有在明确接受直接修改当前检出目录时才使用 `--in-place`。当前版本继续会话需要使用 `--in-place --continue`；随机创建的托管 worktree 不会被误当成旧会话目录。
+
+通用 Shell 默认关闭，因为它能以当前用户权限绕过文件路径策略。只有对仓库和任务输入都充分信任时才显式添加 `--unsafe-shell`。即使启用，`allowedPaths` 也不会成为 Shell 的强制边界；最终 Git 审计只能发现仓库内副作用，无法撤销它们或发现仓库外写入。
 
 ## 任务规范
 

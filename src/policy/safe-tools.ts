@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { assertReadablePath, assertWritablePath, relativePathWithin } from "./path-policy.js";
 
-async function assertFilesystemContained(workspace: string, targetPath: string): Promise<string> {
+export async function assertFilesystemContained(workspace: string, targetPath: string): Promise<string> {
   const realWorkspace = await realpath(workspace);
   let existingAncestor = targetPath;
   while (true) {
@@ -37,10 +37,19 @@ async function safeReadablePath(workspace: string, targetPath: string): Promise<
 }
 
 async function safeWritablePath(workspace: string, targetPath: string, allowedPaths: string[]): Promise<string> {
-  return assertFilesystemContained(workspace, assertWritablePath(workspace, targetPath, allowedPaths));
+  const safePath = await assertFilesystemContained(workspace, assertWritablePath(workspace, targetPath, allowedPaths));
+  try {
+    const metadata = await stat(safePath);
+    if (metadata.isFile() && metadata.nlink > 1) {
+      throw new Error(`Refusing to modify a file with multiple hard links: ${targetPath}`);
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  return safePath;
 }
 
-export function createSafeToolDefinitions(workspace: string, allowedPaths: string[]): ToolDefinition[] {
+export function createSafeToolDefinitions(workspace: string, allowedPaths: string[], includeShell = false): ToolDefinition[] {
   const read = createReadToolDefinition(workspace, {
     operations: {
       readFile: async (absolutePath) => readFile(await safeReadablePath(workspace, absolutePath)),
@@ -66,9 +75,8 @@ export function createSafeToolDefinitions(workspace: string, allowedPaths: strin
   const shell = process.platform === "win32"
     ? createPowerShellToolDefinition(workspace)
     : createBashToolDefinition(workspace);
-  return [
+  const fileTools: ToolDefinition[] = [
     defineTool(read),
-    defineTool(shell),
     defineTool(edit),
     defineTool(write),
     defineTool(createLsToolDefinition(workspace, {
@@ -87,4 +95,5 @@ export function createSafeToolDefinitions(workspace: string, allowedPaths: strin
       }
     }))
   ];
+  return includeShell ? [fileTools[0]!, defineTool(shell), ...fileTools.slice(1)] : fileTools;
 }

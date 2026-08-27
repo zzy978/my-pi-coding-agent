@@ -40,14 +40,25 @@ export async function currentBranch(cwd: string): Promise<string> {
 
 export async function listChangedFiles(cwd: string): Promise<string[]> {
   const [tracked, untracked] = await Promise.all([
-    git(cwd, ["diff", "--name-only", "-z", "HEAD"]),
+    git(cwd, ["diff", "--name-status", "-z", "--find-renames", "HEAD"]),
     git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])
   ]);
   if (tracked.exitCode !== 0 || untracked.exitCode !== 0 || tracked.stdoutTruncated || untracked.stdoutTruncated) {
     throw new WorkspaceError("Unable to inspect changed files");
   }
-  const split = (value: string) => value.split("\0").filter((item) => item.length > 0);
-  return [...new Set([...split(tracked.stdout), ...split(untracked.stdout)])].sort();
+  const trackedTokens = tracked.stdout.split("\0").filter((item) => item.length > 0);
+  const trackedPaths: string[] = [];
+  for (let index = 0; index < trackedTokens.length;) {
+    const status = trackedTokens[index++] ?? "";
+    const firstPath = trackedTokens[index++];
+    if (firstPath) trackedPaths.push(firstPath);
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const secondPath = trackedTokens[index++];
+      if (secondPath) trackedPaths.push(secondPath);
+    }
+  }
+  const untrackedPaths = untracked.stdout.split("\0").filter((item) => item.length > 0);
+  return [...new Set([...trackedPaths, ...untrackedPaths])].sort();
 }
 
 export async function prepareWorkspace(sourcePath: string, options: {

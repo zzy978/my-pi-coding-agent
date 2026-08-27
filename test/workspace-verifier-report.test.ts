@@ -7,6 +7,7 @@ import { parseTaskSpec } from "../src/task/task-spec.js";
 import { runVerification } from "../src/verifier/verifier.js";
 import { discardManagedWorkspace, listChangedFiles, prepareWorkspace, resolveGitRoot, WorkspaceError } from "../src/workspace/git.js";
 import { initializeGitRepository } from "./helpers/git-repository.js";
+import { runProcess } from "../src/runtime/process.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -70,6 +71,43 @@ describe("verification and reports", () => {
     expect(report.success).toBe(false);
   });
 
+  it("audits files created by verification commands", async () => {
+    const { repository } = await temporaryRepository();
+    const task = parseTaskSpec({
+      id: "verify-side-effect",
+      objective: "detect verifier side effects",
+      allowedPaths: ["src/**"],
+      verify: [process.platform === "win32" ? "echo generated>generated.txt" : "printf generated > generated.txt"]
+    });
+    const report = await runVerification(repository, task);
+    expect(report.commands[0]?.status).toBe("passed");
+    expect(report.changedFiles).toContain("generated.txt");
+    expect(report.disallowedChangedFiles).toContain("generated.txt");
+    expect(report.success).toBe(false);
+  });
+
+  it("audits both sides of a Git rename", async () => {
+    const { repository } = await temporaryRepository();
+    await writeFile(join(repository, "secret.txt"), "secret\n", "utf8");
+    let result = await runProcess("git", ["add", "secret.txt"], { cwd: repository });
+    expect(result.exitCode).toBe(0);
+    result = await runProcess("git", ["commit", "-m", "add secret"], { cwd: repository });
+    expect(result.exitCode).toBe(0);
+    await mkdir(join(repository, "src"));
+    result = await runProcess("git", ["mv", "secret.txt", "src/secret.txt"], { cwd: repository });
+    expect(result.exitCode).toBe(0);
+    const task = parseTaskSpec({
+      id: "rename-scope",
+      objective: "detect rename source",
+      allowedPaths: ["src/**"],
+      verify: [process.platform === "win32" ? "exit 0" : "true"]
+    });
+    const report = await runVerification(repository, task);
+    expect(report.changedFiles).toEqual(["secret.txt", "src/secret.txt"]);
+    expect(report.disallowedChangedFiles).toEqual(["secret.txt"]);
+    expect(report.success).toBe(false);
+  });
+
   it("writes machine-readable and human-readable run reports", async () => {
     const { parent, repository } = await temporaryRepository();
     const task = parseTaskSpec({ id: "report", objective: "write report", verify: [process.platform === "win32" ? "exit 0" : "true"] });
@@ -84,5 +122,36 @@ describe("verification and reports", () => {
     }, join(parent, "agent-data"));
     await expect(readFile(paths.jsonPath, "utf8")).resolves.toContain('"sessionId": "session-test"');
     await expect(readFile(paths.markdownPath, "utf8")).resolves.toContain("# Coding Agent Run");
+  });
+
+  it("preserves stdout, stderr, and embedded Markdown fences in reports", async () => {
+    const { parent, repository } = await temporaryRepository();
+    const task = parseTaskSpec({ id: "markdown-output", objective: "report output", verify: ["unused"] });
+    const paths = await writeRunReport({
+      version: 1,
+      createdAt: "2026-08-27T12:34:56.000Z",
+      task,
+      workspace: { sourceRoot: repository, workspace: repository, branch: "main", managedWorktree: false },
+      sessionId: "session-markdown",
+      verification: {
+        configured: true,
+        success: false,
+        changedFiles: [],
+        disallowedChangedFiles: [],
+        commands: [{
+          command: "tool --value `x`",
+          status: "failed",
+          exitCode: 1,
+          stdout: "stdout with ``` fence",
+          stderr: "stderr evidence",
+          outputTruncated: false,
+          durationMs: 1
+        }]
+      }
+    }, join(parent, "markdown-report"));
+    const markdown = await readFile(paths.markdownPath, "utf8");
+    expect(markdown).toContain("stdout with ``` fence");
+    expect(markdown).toContain("stderr evidence");
+    expect(markdown).toContain("````text");
   });
 });

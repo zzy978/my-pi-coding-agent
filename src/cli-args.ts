@@ -9,6 +9,7 @@ export interface CliOptions {
   continueSession: boolean;
   noSession: boolean;
   inPlace: boolean;
+  unsafeShell: boolean;
   doctor: boolean;
   help: boolean;
   version: boolean;
@@ -39,6 +40,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let continueSession = false;
   let noSession = false;
   let inPlace = false;
+  let unsafeShell = false;
   let doctor = false;
   let help = false;
   let version = false;
@@ -78,6 +80,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       case "--in-place":
         inPlace = true;
         break;
+      case "--unsafe-shell":
+        unsafeShell = true;
+        break;
       case "--doctor":
         doctor = true;
         break;
@@ -98,6 +103,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
 
   if (task && taskFile) throw new CliUsageError("Use either --task or --task-file, not both");
   if (continueSession && noSession) throw new CliUsageError("--continue cannot be combined with --no-session");
+  if (continueSession && !inPlace) {
+    throw new CliUsageError("--continue currently requires --in-place because managed worktrees use a new path on each run");
+  }
   if (positionalWorkspace && workspace !== cwd) {
     throw new CliUsageError("Use either a positional workspace or --cwd, not both");
   }
@@ -112,6 +120,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     continueSession,
     noSession,
     inPlace,
+    unsafeShell,
     doctor,
     help,
     version

@@ -23,10 +23,19 @@ describe("path policy", () => {
     expect(isAllowedChangedPath("src/index.ts", ["src/**"])).toBe(true);
     expect(isAllowedChangedPath("README.md", ["src/**"])).toBe(false);
     expect(isProtectedPath(".git/config")).toBe(true);
+    expect(isProtectedPath("packages/app/.git/config")).toBe(true);
     expect(isProtectedPath(".env.local")).toBe(true);
+    expect(isProtectedPath("apps/api/.env.production")).toBe(true);
     expect(isSensitiveReadPath(".env.local")).toBe(true);
+    expect(isSensitiveReadPath("apps/api/.env.production")).toBe(true);
     expect(() => assertReadablePath(workspace, ".env.local")).toThrow("protected from reads");
     expect(isAllowedChangedPath("node_modules/pkg/index.js", ["**/*"])).toBe(false);
+    expect(isAllowedChangedPath("packages/app/node_modules/pkg/index.js", ["**/*"])).toBe(false);
+    if (process.platform === "win32") {
+      expect(isProtectedPath(".Git/config")).toBe(true);
+      expect(isSensitiveReadPath(".ENV")).toBe(true);
+      expect(isAllowedChangedPath("Node_Modules/pkg/index.js", ["**/*"])).toBe(false);
+    }
     expect(() => assertWritablePath(workspace, ".env", ["**/*"])).toThrow("not allowed");
   });
 });

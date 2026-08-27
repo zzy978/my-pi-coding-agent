@@ -13,21 +13,25 @@ export interface PiRuntimeOptions {
   getTask: () => TaskSpec;
   continueSession: boolean;
   noSession: boolean;
+  allowShell: boolean;
 }
 
 export class PiRuntime {
   readonly session: AgentSession;
   readonly diagnostics: readonly { type: "info" | "warning" | "error"; message: string }[];
   readonly modelFallbackMessage: string | undefined;
+  readonly hasAvailableModel: boolean;
 
   private constructor(
     session: AgentSession,
     diagnostics: readonly { type: "info" | "warning" | "error"; message: string }[],
-    modelFallbackMessage?: string
+    modelFallbackMessage: string | undefined,
+    hasAvailableModel: boolean
   ) {
     this.session = session;
     this.diagnostics = diagnostics;
     this.modelFallbackMessage = modelFallbackMessage;
+    this.hasAvailableModel = hasAvailableModel;
   }
 
   static async create(options: PiRuntimeOptions): Promise<PiRuntime> {
@@ -51,9 +55,14 @@ export class PiRuntime {
       services,
       sessionManager,
       noTools: "builtin",
-      customTools: createSafeToolDefinitions(options.workspace, task.allowedPaths)
+      customTools: createSafeToolDefinitions(options.workspace, task.allowedPaths, options.allowShell)
     });
-    return new PiRuntime(result.session, services.diagnostics, result.modelFallbackMessage);
+    return new PiRuntime(
+      result.session,
+      services.diagnostics,
+      result.modelFallbackMessage,
+      services.modelRuntime.getAvailableSnapshot().length > 0
+    );
   }
 
   subscribe(listener: (event: AgentSessionEvent) => void): () => void {

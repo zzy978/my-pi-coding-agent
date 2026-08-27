@@ -1,8 +1,16 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
 
-const ALWAYS_PROTECTED = [".git", ".git/**", ".env", ".env.*", "node_modules", "node_modules/**"];
-const SENSITIVE_READ_PATHS = [".git", ".git/**", ".env", ".env.*"];
+const ALWAYS_PROTECTED = [
+  ".git", ".git/**", "**/.git", "**/.git/**",
+  ".env", ".env.*", "**/.env", "**/.env.*",
+  "node_modules", "node_modules/**", "**/node_modules", "**/node_modules/**"
+];
+const SENSITIVE_READ_PATHS = [
+  ".git", ".git/**", "**/.git", "**/.git/**",
+  ".env", ".env.*", "**/.env", "**/.env.*"
+];
+const MATCH_OPTIONS = { dot: true, nocase: process.platform === "win32" } as const;
 
 export function normalizeRelativePath(filePath: string): string {
   return filePath.split(sep).join("/").replace(/^\.\//, "");
@@ -19,18 +27,18 @@ export function relativePathWithin(workspace: string, filePath: string): string 
 
 export function isProtectedPath(relativePath: string): boolean {
   const normalized = normalizeRelativePath(relativePath);
-  return ALWAYS_PROTECTED.some((pattern) => minimatch(normalized, pattern, { dot: true }));
+  return ALWAYS_PROTECTED.some((pattern) => minimatch(normalized, pattern, MATCH_OPTIONS));
 }
 
 export function isSensitiveReadPath(relativePath: string): boolean {
   const normalized = normalizeRelativePath(relativePath);
-  return SENSITIVE_READ_PATHS.some((pattern) => minimatch(normalized, pattern, { dot: true }));
+  return SENSITIVE_READ_PATHS.some((pattern) => minimatch(normalized, pattern, MATCH_OPTIONS));
 }
 
 export function isAllowedChangedPath(relativePath: string, allowedPaths: string[]): boolean {
   const normalized = normalizeRelativePath(relativePath);
   if (!normalized || isProtectedPath(normalized)) return false;
-  return allowedPaths.some((pattern) => minimatch(normalized, pattern, { dot: true, matchBase: true }));
+  return allowedPaths.some((pattern) => minimatch(normalized, pattern, { ...MATCH_OPTIONS, matchBase: true }));
 }
 
 export function assertReadablePath(workspace: string, filePath: string): string {
