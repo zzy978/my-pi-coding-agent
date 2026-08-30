@@ -97,7 +97,7 @@ describe("TUI turn lifecycle", () => {
     const app = new CodingAgentTui({
       runtime,
       task,
-      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false },
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) },
       initialPrompt: task.objective
     });
 
@@ -138,7 +138,7 @@ describe("TUI turn lifecycle", () => {
     const app = new CodingAgentTui({
       runtime,
       task,
-      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false },
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) },
       initialPrompt: task.objective
     });
 

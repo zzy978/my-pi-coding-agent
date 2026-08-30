@@ -4,6 +4,7 @@ import { getDataDirectory } from "../runtime/data-dir.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import type { VerificationReport } from "../verifier/verifier.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
+import { redactSensitiveText, sanitizeVerificationReport } from "../evaluation/redaction.js";
 
 export interface RunReport {
   version: 1;
@@ -51,20 +52,20 @@ ${codeBlock(item.stderr.slice(0, 20_000))}`).join("\n\n");
   return `# Coding Agent Run
 
 - Created: ${report.createdAt}
-- Task: ${report.task.id}
-- Objective: ${report.task.objective}
-- Workspace: ${report.workspace.workspace}
-- Branch: ${report.workspace.branch}
-- Session: ${report.sessionId}
+- Task: ${inlineCode(report.task.id)}
+- Objective: ${inlineCode(report.task.objective)}
+- Workspace: ${inlineCode(report.workspace.workspace)}
+- Branch: ${inlineCode(report.workspace.branch)}
+- Session: ${inlineCode(report.sessionId)}
 - Result: ${verification.success ? "PASS" : "INCOMPLETE OR FAILED"}
 
 ## Changed files
 
-${verification.changedFiles.length ? verification.changedFiles.map((file) => `- ${file}`).join("\n") : "No changed files."}
+${verification.changedFiles.length ? verification.changedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "No changed files."}
 
 ## Disallowed changes
 
-${verification.disallowedChangedFiles.length ? verification.disallowedChangedFiles.map((file) => `- ${file}`).join("\n") : "None."}
+${verification.disallowedChangedFiles.length ? verification.disallowedChangedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "None."}
 
 ## Verification
 
@@ -72,16 +73,42 @@ ${verification.configured ? commandSections || "No command results." : "No verif
 `;
 }
 
-export async function writeRunReport(report: RunReport, dataDirectory = getDataDirectory()): Promise<{ jsonPath: string; markdownPath: string }> {
-  const reportDir = join(dataDirectory, "reports");
+export async function writeRunReport(
+  report: RunReport,
+  dataDirectory = getDataDirectory(),
+  options?: { outputDirectory?: string; baseName?: string }
+): Promise<{ jsonPath: string; markdownPath: string }> {
+  const reportDir = options?.outputDirectory ?? join(dataDirectory, "reports");
   await mkdir(reportDir, { recursive: true });
   const timestamp = report.createdAt.replace(/[-:TZ.]/g, "");
-  const base = `${timestamp}-${safeName(report.task.id)}`;
+  const base = options?.baseName ?? `${timestamp}-${safeName(report.task.id)}`;
   const jsonPath = join(reportDir, `${base}.json`);
   const markdownPath = join(reportDir, `${base}.md`);
+  const safeVerification = sanitizeVerificationReport(report.verification);
+  const safeReport: RunReport = {
+    ...report,
+    task: {
+      ...report.task,
+      id: redactSensitiveText(report.task.id),
+      objective: redactSensitiveText(report.task.objective),
+      allowedPaths: report.task.allowedPaths.map((path) => redactSensitiveText(path)),
+      verify: report.task.verify.map((item, index) => ({
+        ...item,
+        command: safeVerification.commands[index]?.command ?? redactSensitiveText(item.command)
+      })),
+      doneWhen: report.task.doneWhen.map((item) => redactSensitiveText(item))
+    },
+    workspace: {
+      ...report.workspace,
+      sourceRoot: redactSensitiveText(report.workspace.sourceRoot),
+      workspace: redactSensitiveText(report.workspace.workspace)
+    },
+    ...(report.sessionFile ? { sessionFile: redactSensitiveText(report.sessionFile) } : {}),
+    verification: safeVerification
+  };
   await Promise.all([
-    writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8"),
-    writeFile(markdownPath, markdown(report), "utf8")
+    writeFile(jsonPath, `${JSON.stringify(safeReport, null, 2)}\n`, "utf8"),
+    writeFile(markdownPath, markdown(safeReport), "utf8")
   ]);
   return { jsonPath, markdownPath };
 }

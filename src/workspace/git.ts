@@ -9,6 +9,7 @@ export interface WorkspaceInfo {
   workspace: string;
   branch: string;
   managedWorktree: boolean;
+  baselineCommit: string;
 }
 
 export class WorkspaceError extends Error {
@@ -38,6 +39,15 @@ export async function currentBranch(cwd: string): Promise<string> {
   return result.exitCode === 0 && result.stdout.trim() ? result.stdout.trim() : "(detached)";
 }
 
+export async function resolveCommit(cwd: string, revision = "HEAD"): Promise<string> {
+  const result = await git(cwd, ["rev-parse", "--verify", `${revision}^{commit}`]);
+  const commit = result.stdout.trim();
+  if (result.exitCode !== 0 || !/^[0-9a-f]{40,64}$/i.test(commit)) {
+    throw new WorkspaceError(`Git commit does not exist: ${revision}`);
+  }
+  return commit.toLowerCase();
+}
+
 export async function listChangedFiles(cwd: string): Promise<string[]> {
   const [tracked, untracked] = await Promise.all([
     git(cwd, ["diff", "--name-status", "-z", "--find-renames", "HEAD"]),
@@ -64,11 +74,17 @@ export async function listChangedFiles(cwd: string): Promise<string[]> {
 export async function prepareWorkspace(sourcePath: string, options: {
   inPlace: boolean;
   dataDirectory?: string;
+  baselineCommit?: string;
+  branchPrefix?: "agent" | "replay";
 }): Promise<WorkspaceInfo> {
   const sourceRoot = await resolveGitRoot(sourcePath);
   const sourceBranch = await currentBranch(sourceRoot);
+  const baselineCommit = await resolveCommit(sourceRoot, options.baselineCommit ?? "HEAD");
   if (options.inPlace) {
-    return { sourceRoot, workspace: sourceRoot, branch: sourceBranch, managedWorktree: false };
+    if (options.baselineCommit && baselineCommit !== await resolveCommit(sourceRoot)) {
+      throw new WorkspaceError("An in-place workspace cannot be prepared from a historical baseline commit");
+    }
+    return { sourceRoot, workspace: sourceRoot, branch: sourceBranch, managedWorktree: false, baselineCommit };
   }
 
   const changed = await listChangedFiles(sourceRoot);
@@ -81,16 +97,16 @@ export async function prepareWorkspace(sourcePath: string, options: {
   const slug = basename(sourceRoot).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repository";
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = randomUUID().slice(0, 8);
-  const branch = `agent/${stamp}-${suffix}`;
+  const branch = `${options.branchPrefix ?? "agent"}/${stamp}-${suffix}`;
   const worktreeRoot = join(options.dataDirectory ?? getDataDirectory(), "worktrees");
   const workspace = join(worktreeRoot, `${slug}-${stamp}-${suffix}`);
   await mkdir(worktreeRoot, { recursive: true });
 
-  const result = await git(sourceRoot, ["worktree", "add", "-b", branch, workspace, "HEAD"], 120_000);
+  const result = await git(sourceRoot, ["worktree", "add", "-b", branch, workspace, baselineCommit], 120_000);
   if (result.exitCode !== 0) {
     throw new WorkspaceError(`Could not create worktree: ${result.stderr.trim() || result.stdout.trim()}`);
   }
-  return { sourceRoot, workspace, branch, managedWorktree: true };
+  return { sourceRoot, workspace, branch, managedWorktree: true, baselineCommit };
 }
 
 export async function getDiff(cwd: string): Promise<string> {

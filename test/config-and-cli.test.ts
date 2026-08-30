@@ -31,12 +31,32 @@ describe("parseCliArgs", () => {
     expect(options.unsafeShell).toBe(true);
   });
 
+  it("parses controlled-run management modes without changing the default workspace", () => {
+    const cwd = resolve("fixture-root");
+    expect(parseCliArgs(["repo", "--record", "--task", "fix it"], cwd)).toMatchObject({
+      workspace: resolve(cwd, "repo"),
+      record: true
+    });
+    expect(parseCliArgs(["--list-runs", "--json"], cwd)).toMatchObject({ listRuns: true, json: true });
+    expect(parseCliArgs(["--show-run", "run-123"], cwd)).toMatchObject({ showRunId: "run-123" });
+    expect(parseCliArgs(["--replay", "run-123", "--unsafe-shell"], cwd)).toMatchObject({
+      replayRunId: "run-123",
+      unsafeShell: true
+    });
+  });
+
   it.each([
     [["--task"], "--task requires a value"],
     [["--task", "one", "--task-file", "task.yaml"], "Use either"],
     [["--continue", "--no-session", "--in-place"], "cannot be combined"],
     [["--continue"], "requires --in-place"],
-    [["--unknown"], "Unknown option"]
+    [["--unknown"], "Unknown option"],
+    [["--record"], "requires --task"],
+    [["repo", "--record", "--task", "x", "--in-place"], "fresh managed worktree"],
+    [["repo", "--replay", "run-123"], "restores workspace"],
+    [["--replay", "run-123", "--task", "x"], "restores workspace"],
+    [["--list-runs", "--show-run", "run-123"], "Use only one"],
+    [["--json"], "requires --list-runs"]
   ] as const)("rejects invalid arguments %j", (args, message) => {
     expect(() => parseCliArgs([...args])).toThrowError(CliUsageError);
     expect(() => parseCliArgs([...args])).toThrow(message);

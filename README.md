@@ -82,6 +82,32 @@ doneWhen:
 
 没有配置验证命令时，运行结果会被标记为“不完整”，不会被当作成功。
 
+## 可复现评测与回放
+
+受控运行是一次性的 `prompt → verifier → evidence` 流程。它始终从干净源仓库创建新的受管 worktree，不进入交互式 TUI：
+
+```bash
+pi-agent-tui /path/to/repository --record --task-file examples/task.yaml --no-session
+pi-agent-tui --list-runs
+pi-agent-tui --show-run <runId>
+pi-agent-tui --replay <runId>
+```
+
+`--replay` 从原 manifest 固定的 Git commit 创建另一个全新 worktree，并恢复 TaskSpec、verifier、模型、thinking level 和工具策略。若原运行使用了 `--unsafe-shell`，回放必须再次显式授权；未使用 Shell 的运行不能在回放时升级权限。
+
+每次运行在数据目录的 `runs/<runId>/` 下生成：
+
+```text
+manifest.json       固定基线、任务、模型、策略和上下文哈希
+trace.jsonl         脱敏后的可观察事件与执行摘要
+verification.json  verifier 和路径审计证据
+result.json         状态、改动、耗时、Token 与成本
+report.json/.md     机器和人工可读的运行报告
+comparison.json/.md（回放）原始运行与回放的对比报告
+```
+
+`verification_passed` 表示新运行独立通过 verifier 和路径审计，不表示模型文本或工具顺序逐字一致。可用 `--list-runs --json` 或 `--show-run <runId> --json` 获取机器可读输出。
+
 ## TUI 命令
 
 | 命令 | 作用 |
@@ -132,6 +158,7 @@ npm run build
 - `src/workspace/git.ts`：Git worktree 生命周期。
 - `src/verifier/verifier.ts`：确定性验证。
 - `src/report/report.ts`：运行证据报告。
+- `src/evaluation/`：受控运行、manifest、Trace、回放与对比。
 
 ## License
 

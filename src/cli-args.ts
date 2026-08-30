@@ -10,6 +10,11 @@ export interface CliOptions {
   noSession: boolean;
   inPlace: boolean;
   unsafeShell: boolean;
+  record: boolean;
+  listRuns: boolean;
+  showRunId?: string;
+  replayRunId?: string;
+  json: boolean;
   doctor: boolean;
   help: boolean;
   version: boolean;
@@ -41,6 +46,11 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let noSession = false;
   let inPlace = false;
   let unsafeShell = false;
+  let record = false;
+  let listRuns = false;
+  let showRunId: string | undefined;
+  let replayRunId: string | undefined;
+  let json = false;
   let doctor = false;
   let help = false;
   let version = false;
@@ -83,6 +93,23 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       case "--unsafe-shell":
         unsafeShell = true;
         break;
+      case "--record":
+        record = true;
+        break;
+      case "--list-runs":
+        listRuns = true;
+        break;
+      case "--show-run":
+        showRunId = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--replay":
+        replayRunId = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--json":
+        json = true;
+        break;
       case "--doctor":
         doctor = true;
         break;
@@ -110,6 +137,18 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     throw new CliUsageError("Use either a positional workspace or --cwd, not both");
   }
   if (positionalWorkspace) workspace = positionalWorkspace;
+  const managementModes = [listRuns, Boolean(showRunId), Boolean(replayRunId)].filter(Boolean).length;
+  if (managementModes > 1) throw new CliUsageError("Use only one of --list-runs, --show-run, or --replay");
+  if (record && managementModes > 0) throw new CliUsageError("--record cannot be combined with run management options");
+  if (record && !task && !taskFile) throw new CliUsageError("--record requires --task or --task-file");
+  if (record && (inPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
+  if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || allowedPaths.length || inPlace || continueSession || noSession)) {
+    throw new CliUsageError("--replay restores workspace and TaskSpec from the manifest; only --unsafe-shell may be added");
+  }
+  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || allowedPaths.length || inPlace || continueSession || noSession || unsafeShell)) {
+    throw new CliUsageError("Run listing and inspection cannot be combined with execution options");
+  }
+  if (json && !(listRuns || showRunId)) throw new CliUsageError("--json requires --list-runs or --show-run");
 
   return {
     workspace: resolve(cwd, workspace),
@@ -121,6 +160,11 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     noSession,
     inPlace,
     unsafeShell,
+    record,
+    listRuns,
+    ...(showRunId ? { showRunId } : {}),
+    ...(replayRunId ? { replayRunId } : {}),
+    json,
     doctor,
     help,
     version
