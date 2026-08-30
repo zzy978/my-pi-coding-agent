@@ -20,13 +20,16 @@ describe("parseCliArgs", () => {
     const cwd = resolve("fixture-root");
     const options = parseCliArgs([
       "repo", "--task", "fix it", "--allow", "src/**", "--allow", "test/**",
-      "--verify", "npm test", "--verify", "npm run check", "--in-place", "--unsafe-shell"
+      "--verify", "npm test", "--verify", "npm run check",
+      "--setup", "npm ci", "--setup", "npm run prepare", "--in-place", "--unsafe-shell"
     ], cwd);
 
     expect(options.workspace).toBe(resolve(cwd, "repo"));
     expect(options.task).toBe("fix it");
     expect(options.allowedPaths).toEqual(["src/**", "test/**"]);
     expect(options.verifyCommands).toEqual(["npm test", "npm run check"]);
+    expect(options.setupCommands).toEqual(["npm ci", "npm run prepare"]);
+    expect(options.noSetup).toBe(false);
     expect(options.inPlace).toBe(true);
     expect(options.unsafeShell).toBe(true);
   });
@@ -52,9 +55,11 @@ describe("parseCliArgs", () => {
     [["--continue"], "requires --in-place"],
     [["--unknown"], "Unknown option"],
     [["--record"], "requires --task"],
+    [["--setup", "npm ci", "--no-setup"], "cannot be combined"],
     [["repo", "--record", "--task", "x", "--in-place"], "fresh managed worktree"],
     [["repo", "--replay", "run-123"], "restores workspace"],
     [["--replay", "run-123", "--task", "x"], "restores workspace"],
+    [["--replay", "run-123", "--no-setup"], "restores workspace"],
     [["--list-runs", "--show-run", "run-123"], "Use only one"],
     [["--json"], "requires --list-runs"]
   ] as const)("rejects invalid arguments %j", (args, message) => {

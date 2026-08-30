@@ -5,10 +5,12 @@ import type { AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-
 import { APP_VERSION } from "../config.js";
 import type { PiRuntime } from "../runtime/pi-runtime.js";
 import type { TaskSpec } from "../task/task-spec.js";
+import { PROMPT_POLICY_VERSION } from "../task/task-spec.js";
 import type { VerificationReport } from "../verifier/verifier.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
+import type { SetupPlan } from "../workspace/setup.js";
 import { compareRuns, comparisonMarkdown } from "./comparison.js";
-import { assertRecordableTask, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "./redaction.js";
+import { assertRecordableCommands, assertRecordableTask, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "./redaction.js";
 import {
   EVALUATION_SCHEMA_VERSION,
   parseRunManifest,
@@ -35,6 +37,7 @@ interface RecorderOptions {
   runtime: PiRuntime;
   allowShell: boolean;
   noSession: boolean;
+  setup: SetupPlan;
   dataDirectory?: string;
 }
 
@@ -108,6 +111,7 @@ export class RunRecorder {
     const model = options.runtime.session.model;
     if (!model) throw new Error("Cannot record a controlled run without a configured model");
     assertRecordableTask(options.task);
+    assertRecordableCommands(options.setup.commands, "Setup");
     const task = cloneTask(options.task);
     const runId = randomUUID();
     const manifest = parseRunManifest({
@@ -122,9 +126,15 @@ export class RunRecorder {
       task: { content: task, sha256: sha256Json(task) },
       agent: {
         appVersion: APP_VERSION,
+        promptPolicyVersion: PROMPT_POLICY_VERSION,
         model: { provider: model.provider, id: model.id },
         thinkingLevel: options.runtime.session.thinkingLevel,
         sessionMode: options.noSession ? "ephemeral" : "persistent"
+      },
+      setup: {
+        source: options.setup.source,
+        commands: options.setup.commands.map((item) => ({ ...item })),
+        sha256: sha256Json(options.setup.commands)
       },
       policy: {
         allowShell: options.allowShell,

@@ -5,6 +5,8 @@ export interface CliOptions {
   task?: string;
   taskFile?: string;
   verifyCommands: string[];
+  setupCommands: string[];
+  noSetup: boolean;
   allowedPaths: string[];
   continueSession: boolean;
   noSession: boolean;
@@ -41,6 +43,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let task: string | undefined;
   let taskFile: string | undefined;
   const verifyCommands: string[] = [];
+  const setupCommands: string[] = [];
+  let noSetup = false;
   const allowedPaths: string[] = [];
   let continueSession = false;
   let noSession = false;
@@ -75,6 +79,13 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       case "--verify":
         verifyCommands.push(takeValue(args, index, arg));
         index += 1;
+        break;
+      case "--setup":
+        setupCommands.push(takeValue(args, index, arg));
+        index += 1;
+        break;
+      case "--no-setup":
+        noSetup = true;
         break;
       case "--allow":
         allowedPaths.push(takeValue(args, index, arg));
@@ -140,12 +151,13 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   const managementModes = [listRuns, Boolean(showRunId), Boolean(replayRunId)].filter(Boolean).length;
   if (managementModes > 1) throw new CliUsageError("Use only one of --list-runs, --show-run, or --replay");
   if (record && managementModes > 0) throw new CliUsageError("--record cannot be combined with run management options");
+  if (noSetup && setupCommands.length > 0) throw new CliUsageError("--setup cannot be combined with --no-setup");
   if (record && !task && !taskFile) throw new CliUsageError("--record requires --task or --task-file");
   if (record && (inPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
-  if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || allowedPaths.length || inPlace || continueSession || noSession)) {
+  if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || inPlace || continueSession || noSession)) {
     throw new CliUsageError("--replay restores workspace and TaskSpec from the manifest; only --unsafe-shell may be added");
   }
-  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || allowedPaths.length || inPlace || continueSession || noSession || unsafeShell)) {
+  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || inPlace || continueSession || noSession || unsafeShell)) {
     throw new CliUsageError("Run listing and inspection cannot be combined with execution options");
   }
   if (json && !(listRuns || showRunId)) throw new CliUsageError("--json requires --list-runs or --show-run");
@@ -155,6 +167,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     ...(task ? { task } : {}),
     ...(taskFile ? { taskFile: resolve(cwd, taskFile) } : {}),
     verifyCommands,
+    setupCommands,
+    noSetup,
     allowedPaths,
     continueSession,
     noSession,

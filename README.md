@@ -50,7 +50,13 @@ npm run dev -- D:\projects\my-repo --task "修复解析器并补充回归测试"
 
 默认要求源仓库没有未提交变更，然后创建托管 worktree。只有在明确接受直接修改当前检出目录时才使用 `--in-place`。当前版本继续会话需要使用 `--in-place --continue`；随机创建的托管 worktree 不会被误当成旧会话目录。
 
+托管 worktree 创建后会先执行初始化：若仓库根目录存在 `package-lock.json`，默认运行一次 `npm ci --ignore-scripts`，成功后才启动 Agent。可使用可重复的 `--setup "<命令>"` 完全替代自动初始化，或用 `--no-setup` 关闭；确实需要 lifecycle scripts 的受信仓库可显式传入 `--setup "npm ci"`。`--in-place` 模式默认不自动安装依赖。setup 失败或产生 Git 变更时，本次 worktree 会被清理，模型不会启动。
+
+自动初始化关闭 npm lifecycle scripts，但安装过程仍会访问包源并处理仓库依赖。显式 `--setup "npm ci"` 会执行仓库定义的 lifecycle scripts，只适用于你信任的仓库；不受信任的仓库应使用 `--no-setup`，并放入限制网络和凭据的容器或虚拟机。
+
 通用 Shell 默认关闭，因为它能以当前用户权限绕过文件路径策略。只有对仓库和任务输入都充分信任时才显式添加 `--unsafe-shell`。即使启用，`allowedPaths` 也不会成为 Shell 的强制边界；最终 Git 审计只能发现仓库内副作用，无法撤销它们或发现仓库外写入。
+
+Agent 的自然语言回复跟随当前用户 message 的主要语言：中文提问默认中文回复，英文提问默认英文回复；message 中明确指定的输出语言优先。代码、命令、路径和标识符不会被当作语言判断依据。
 
 ## 任务规范
 

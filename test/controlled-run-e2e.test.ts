@@ -11,8 +11,10 @@ import { discardManagedWorkspace, prepareWorkspace } from "../src/workspace/git.
 import { initializeGitRepository } from "./helpers/git-repository.js";
 
 const temporaryDirectories: string[] = [];
+const capturedPrompts: string[] = [];
 
 afterEach(async () => {
+  capturedPrompts.length = 0;
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 3 })));
 });
 
@@ -49,7 +51,8 @@ function createFakeRuntime(workspace: string): PiRuntime {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    prompt: async () => {
+    prompt: async (text: string) => {
+      capturedPrompts.push(text);
       emit({ type: "agent_start" } as AgentSessionEvent);
       emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hidden" } } as AgentSessionEvent);
       emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "write", args: { path: "result.txt", content: "done\nSECRET" } } as AgentSessionEvent);
@@ -73,6 +76,39 @@ function createFakeRuntime(workspace: string): PiRuntime {
 }
 
 describe("controlled run and replay lifecycle", () => {
+  it("records setup failures before the model is prompted", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-setup-failure-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const task = parseTaskSpec({ id: "setup-failure", objective: "不应启动模型" });
+    const runtime = createFakeRuntime(workspace.workspace);
+    const finalized = await executeControlledRun({
+      kind: "run",
+      runtime,
+      task,
+      workspace,
+      allowShell: false,
+      noSession: true,
+      setup: {
+        source: "explicit",
+        commands: [{ command: "npm run missing-setup-script", timeoutMs: 10_000 }]
+      },
+      dataDirectory
+    });
+
+    expect(finalized.setupFailed).toBe(true);
+    expect(finalized.result.status).toBe("execution_failed");
+    expect(finalized.result.errors.join("\n")).toContain("Workspace setup command failed");
+    expect(capturedPrompts).toEqual([]);
+    await expect(access(join(finalized.directory, "manifest.json"))).resolves.toBeUndefined();
+    await expect(access(join(finalized.directory, "result.json"))).resolves.toBeUndefined();
+    expect(await readFile(join(finalized.directory, "trace.jsonl"), "utf8")).toContain('"type":"setup_end"');
+    await discardManagedWorkspace(workspace);
+  });
+
   it("records evidence and replays from the same baseline in a fresh worktree", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-controlled-e2e-"));
     temporaryDirectories.push(parent);
@@ -94,6 +130,7 @@ describe("controlled run and replay lifecycle", () => {
       workspace: originalWorkspace,
       allowShell: false,
       noSession: true,
+      setup: { source: "disabled", commands: [] },
       dataDirectory
     });
     expect(original.result.status).toBe("verification_passed");
@@ -125,9 +162,14 @@ describe("controlled run and replay lifecycle", () => {
       workspace: replayWorkspace,
       allowShell: false,
       noSession: true,
+      setup: { source: "disabled", commands: [] },
       dataDirectory
     });
     expect(replay.result.status).toBe("verification_passed");
+    expect(capturedPrompts).toHaveLength(2);
+    expect(capturedPrompts[0]).toContain("Current user message:\nCreate result.txt containing done");
+    expect(capturedPrompts[0]).toContain("Response-language rule:");
+    expect(capturedPrompts[1]).toBe(capturedPrompts[0]);
     expect(JSON.parse(await readFile(join(replay.directory, "comparison.json"), "utf8"))).toMatchObject({
       originalRunId: original.manifest.runId,
       replayRunId: replay.manifest.runId,

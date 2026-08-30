@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { parseTaskSpec, type TaskSpec, type VerificationSpec } from "../task/task-spec.js";
 import type { VerificationCommandResult, VerificationReport } from "../verifier/verifier.js";
+import type { SetupCommand, SetupPlan } from "../workspace/setup.js";
 
 export const EVALUATION_SCHEMA_VERSION = 1 as const;
 
@@ -21,10 +22,12 @@ export interface RunManifest {
   task: { content: TaskSpec; sha256: string };
   agent: {
     appVersion: string;
+    promptPolicyVersion?: number;
     model: { provider: string; id: string };
     thinkingLevel: string;
     sessionMode: "persistent" | "ephemeral";
   };
+  setup?: { source: SetupPlan["source"]; commands: SetupCommand[]; sha256: string };
   policy: {
     allowShell: boolean;
     allowedPaths: string[];
@@ -204,6 +207,17 @@ function parseVerificationCommands(value: unknown): VerificationSpec[] {
   });
 }
 
+function parseSetup(value: unknown): NonNullable<RunManifest["setup"]> {
+  const record = objectValue(value, "manifest.setup");
+  if (record.source !== "auto" && record.source !== "explicit" && record.source !== "disabled") {
+    throw new EvaluationArtifactError("manifest.setup.source is invalid");
+  }
+  const commands = parseVerificationCommands(record.commands) as SetupCommand[];
+  const hash = assertSha256(record.sha256, "manifest.setup.sha256");
+  if (sha256Json(commands) !== hash) throw new EvaluationArtifactError("manifest setup hash does not match its commands");
+  return { source: record.source, commands, sha256: hash };
+}
+
 function parseVerificationReport(value: unknown): VerificationReport {
   const record = objectValue(value, "result.verification");
   if (typeof record.configured !== "boolean" || typeof record.success !== "boolean") {
@@ -279,6 +293,10 @@ export function parseRunManifest(value: unknown): RunManifest {
   if (agent.sessionMode !== "persistent" && agent.sessionMode !== "ephemeral") {
     throw new EvaluationArtifactError("manifest.agent.sessionMode is invalid");
   }
+  if (agent.promptPolicyVersion !== undefined && (!Number.isSafeInteger(agent.promptPolicyVersion) || Number(agent.promptPolicyVersion) < 1)) {
+    throw new EvaluationArtifactError("manifest.agent.promptPolicyVersion must be a positive integer");
+  }
+  const setup = record.setup === undefined ? undefined : parseSetup(record.setup);
   const policy = objectValue(record.policy, "manifest.policy");
   if (typeof policy.allowShell !== "boolean") throw new EvaluationArtifactError("manifest.policy.allowShell must be boolean");
   const verifier = objectValue(record.verifier, "manifest.verifier");
@@ -324,6 +342,7 @@ export function parseRunManifest(value: unknown): RunManifest {
     task: { content: task, sha256: taskHash },
     agent: {
       appVersion: nonEmptyString(agent.appVersion, "manifest.agent.appVersion"),
+      ...(agent.promptPolicyVersion === undefined ? {} : { promptPolicyVersion: Number(agent.promptPolicyVersion) }),
       model: {
         provider: nonEmptyString(model.provider, "manifest.agent.model.provider"),
         id: nonEmptyString(model.id, "manifest.agent.model.id")
@@ -331,6 +350,7 @@ export function parseRunManifest(value: unknown): RunManifest {
       thinkingLevel,
       sessionMode: agent.sessionMode
     },
+    ...(setup ? { setup } : {}),
     policy: {
       allowShell: policy.allowShell,
       allowedPaths,

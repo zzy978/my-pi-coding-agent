@@ -4,7 +4,7 @@ import { checkCommand } from "./command-policy.js";
 import { isAllowedChangedPath, isSensitiveReadPath, relativePathWithin } from "./path-policy.js";
 
 function taskPolicyText(task: TaskSpec): string {
-  return `\n\n# Host task policy\n- Work only on task ${task.id}: ${task.objective}\n- Files may be changed only when they match: ${task.allowedPaths.join(", ")}\n- Never edit .git, .env files, or node_modules.\n- Do not commit, push, rewrite history, or run destructive cleanup commands.\n- Verification is performed by the host after the turn. Do not claim success without command evidence.\n- If a requested action conflicts with these rules, explain the conflict instead of bypassing it.`;
+  return `\n\n# Host task policy\n- Work only on task ${task.id}: ${task.objective}\n- Files may be changed only when they match: ${task.allowedPaths.join(", ")}\n- Never edit .git, .env files, or node_modules.\n- Do not commit, push, rewrite history, or run destructive cleanup commands.\n- Verification is performed by the host after the turn. Do not claim success without command evidence.\n- Use the primary natural language of the text under "Current user message" for all prose replies; an explicit language request in that message takes precedence.\n- If a requested action conflicts with these rules, explain the conflict instead of bypassing it.`;
 }
 
 export function createPolicyExtension(workspace: string, getTask: () => TaskSpec): InlineExtension {

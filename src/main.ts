@@ -3,12 +3,14 @@ import { APP_NAME, APP_VERSION } from "./config.js";
 import type { CliOptions } from "./cli-args.js";
 import { loadTaskSpec, createInteractiveTask } from "./task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace } from "./workspace/git.js";
+import { prepareReadyWorkspace, resolveSetupPlan, setupPreferenceFromCli } from "./workspace/setup.js";
 import { PiRuntime } from "./runtime/pi-runtime.js";
 import { CodingAgentTui } from "./tui/app.js";
 import { runDoctor } from "./doctor.js";
 import { executeControlledRun } from "./evaluation/runner.js";
 import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
+import { assertRecordableCommands } from "./evaluation/redaction.js";
 
 export function helpText(): string {
   return `${APP_NAME} ${APP_VERSION}
@@ -21,6 +23,8 @@ Options:
   -t, --task <text>       Start with a task objective
       --task-file <path>  Load a YAML or JSON TaskSpec
       --verify <command>  Add a verification command (repeatable)
+      --setup <command>   Replace automatic worktree setup (repeatable)
+      --no-setup          Disable automatic worktree setup
       --allow <glob>       Add an allowed changed-path glob (repeatable)
   -c, --continue          Continue the latest session for the effective workspace
       --no-session        Do not persist the Pi session
@@ -36,6 +40,7 @@ Options:
   -v, --version           Show version
 
 By default a clean source repository is required and a managed Git worktree is created.
+Managed Node.js worktrees with package-lock.json run npm ci --ignore-scripts before the agent starts.
 Worktrees reduce source-checkout risk but are not a container security boundary.`;
 }
 
@@ -97,9 +102,24 @@ async function runControlled(options: CliOptions): Promise<number> {
   const sourceRepository = replayPlan?.sourceRepository ?? options.workspace;
   if (!existsSync(sourceRepository)) throw new Error(`Workspace does not exist: ${sourceRepository}`);
   const task = replayPlan?.task ?? await taskFromOptions(options);
+  const setupPreference = replayPlan?.setupPreference ?? setupPreferenceFromCli(options.setupCommands, options.noSetup);
+  const recordedSetupCommands = setupPreference.mode === "explicit"
+    ? setupPreference.commands
+    : setupPreference.mode === "resolved"
+      ? setupPreference.plan.commands
+      : [];
+  assertRecordableCommands(recordedSetupCommands, "Setup");
   const workspace = await prepareWorkspace(sourceRepository, {
     inPlace: false,
     ...(replayPlan ? { baselineCommit: replayPlan.baselineCommit, branchPrefix: "replay" as const } : {})
+  });
+  const setup = await resolveSetupPlan(workspace, setupPreference).catch(async (setupError: unknown) => {
+    try {
+      await discardManagedWorkspace(workspace);
+    } catch (cleanupError) {
+      throw new AggregateError([setupError, cleanupError], `Setup resolution and cleanup failed for ${workspace.workspace}`);
+    }
+    throw setupError;
   });
   const noSession = replayPlan?.noSession ?? options.noSession;
   let runtime: PiRuntime;
@@ -124,6 +144,7 @@ async function runControlled(options: CliOptions): Promise<number> {
     await discardManagedWorkspace(workspace);
     throw new Error("No configured Pi model. Run `pi`, use `/login`, then retry or run with --doctor.");
   }
+  let runtimeDisposed = false;
   try {
     const finalized = await executeControlledRun({
       kind: original ? "replay" : "run",
@@ -133,8 +154,18 @@ async function runControlled(options: CliOptions): Promise<number> {
       workspace,
       allowShell: replayPlan?.allowShell ?? options.unsafeShell,
       noSession,
+      setup,
       onStatus: (status) => console.error(status)
     });
+    if (finalized.setupFailed) {
+      runtime.dispose();
+      runtimeDisposed = true;
+      try {
+        await discardManagedWorkspace(workspace);
+      } catch (error) {
+        console.error(`Setup failed and the managed worktree could not be cleaned up: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     console.log([
       `Run ID: ${finalized.manifest.runId}`,
       `Status: ${finalized.result.status}`,
@@ -143,7 +174,7 @@ async function runControlled(options: CliOptions): Promise<number> {
     ].join("\n"));
     return finalized.result.status === "verification_passed" ? 0 : 1;
   } finally {
-    runtime.dispose();
+    if (!runtimeDisposed) runtime.dispose();
   }
 }
 
@@ -177,7 +208,13 @@ export async function run(options: CliOptions): Promise<number> {
 
   const task = await taskFromOptions(options);
 
-  const workspace = await prepareWorkspace(options.workspace, { inPlace: options.inPlace });
+  const ready = await prepareReadyWorkspace(
+    options.workspace,
+    { inPlace: options.inPlace },
+    setupPreferenceFromCli(options.setupCommands, options.noSetup),
+    (command, index, total) => console.error(`Setup ${index + 1}/${total}: ${command}`)
+  );
+  const { workspace } = ready;
   let runtime: PiRuntime;
   try {
     runtime = await PiRuntime.create({

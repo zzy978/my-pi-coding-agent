@@ -29,6 +29,18 @@ describe("TaskSpec", () => {
     expect(formatTaskPrompt(task)).toContain("Verification commands: npm test; npm run check");
   });
 
+  it("makes the current user message authoritative for response language", () => {
+    const task = parseTaskSpec({ objective: "Fallback objective" });
+    const chinese = formatTaskPrompt(task, "请修复 parser.ts 中的错误");
+    const english = formatTaskPrompt(task, "Fix the parser in src/parser.ts");
+
+    expect(chinese).toContain("Current user message:\n请修复 parser.ts 中的错误");
+    expect(english).toContain("Current user message:\nFix the parser in src/parser.ts");
+    expect(chinese).toContain("Respond in the same primary natural language as the current user message above");
+    expect(chinese).toContain("explicitly requests another response language");
+    expect(chinese).toContain("ignore code, identifiers, paths, commands, URLs, and quoted text");
+  });
+
   it("loads YAML and rejects unsafe verifier timeouts", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-agent-task-"));
     temporaryDirectories.push(directory);
@@ -39,4 +51,3 @@ describe("TaskSpec", () => {
       .toThrowError(TaskSpecError);
   });
 });
-

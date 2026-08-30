@@ -3,6 +3,8 @@ import { writeRunReport } from "../report/report.js";
 import { formatTaskPrompt, type TaskSpec } from "../task/task-spec.js";
 import { runVerification, type VerificationReport } from "../verifier/verifier.js";
 import { getDiff, type WorkspaceInfo } from "../workspace/git.js";
+import type { SetupPlan } from "../workspace/setup.js";
+import { runWorkspaceSetup } from "../workspace/setup.js";
 import { RunRecorder, type FinalizedRun } from "./recorder.js";
 import { sanitizeVerificationReport } from "./redaction.js";
 import type { RunKind } from "./schema.js";
@@ -15,11 +17,16 @@ interface ControlledRunOptions {
   workspace: WorkspaceInfo;
   allowShell: boolean;
   noSession: boolean;
+  setup: SetupPlan;
   dataDirectory?: string;
   onStatus?: (status: string) => void;
 }
 
-export async function executeControlledRun(options: ControlledRunOptions): Promise<FinalizedRun> {
+export interface ControlledRunResult extends FinalizedRun {
+  setupFailed: boolean;
+}
+
+export async function executeControlledRun(options: ControlledRunOptions): Promise<ControlledRunResult> {
   const recorder = await RunRecorder.create({
     kind: options.kind,
     ...(options.replayOf ? { replayOf: options.replayOf } : {}),
@@ -28,12 +35,29 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
     runtime: options.runtime,
     allowShell: options.allowShell,
     noSession: options.noSession,
+    setup: options.setup,
     ...(options.dataDirectory ? { dataDirectory: options.dataDirectory } : {})
   });
   const unsubscribe = options.runtime.subscribe((event) => recorder.recordAgentEvent(event));
   let verification: VerificationReport | undefined;
   let executionError: unknown;
+  let setupFailed = false;
   try {
+    options.onStatus?.(`Run ${recorder.manifest.runId}: setup`);
+    recorder.record("setup_start", { source: options.setup.source, commandCount: options.setup.commands.length });
+    try {
+      await runWorkspaceSetup(options.workspace, { mode: "resolved", plan: options.setup }, {
+        onCommandStart: (command, index, total) => {
+          options.onStatus?.(`Run ${recorder.manifest.runId}: setup ${index + 1}/${total}: ${command}`);
+          recorder.record("setup_command_start", { index, total });
+        }
+      });
+      recorder.record("setup_end", { success: true });
+    } catch (error) {
+      setupFailed = true;
+      recorder.record("setup_end", { success: false });
+      throw error;
+    }
     options.onStatus?.(`Run ${recorder.manifest.runId}: agent`);
     await options.runtime.prompt(formatTaskPrompt(options.task, options.task.objective));
     recorder.record("verification_start", { commandCount: options.task.verify.length });
@@ -98,5 +122,5 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
       commands: []
     }
   }, options.dataDirectory, { outputDirectory: finalized.directory, baseName: "report" });
-  return finalized;
+  return { ...finalized, setupFailed };
 }

@@ -4,7 +4,7 @@ import { parseTaskSpec } from "../src/task/task-spec.js";
 
 const tuiState = vi.hoisted(() => ({
   inputListeners: [] as Array<(data: string) => { consume: boolean } | undefined>,
-  latestEditor: undefined as { disableSubmit: boolean } | undefined
+  latestEditor: undefined as { disableSubmit: boolean; onSubmit: ((value: string) => void) | undefined } | undefined
 }));
 
 const verificationMocks = vi.hoisted(() => ({
@@ -104,6 +104,7 @@ describe("TUI turn lifecycle", () => {
     app.start();
     await vi.runAllTimersAsync();
     expect(prompt).toHaveBeenCalledOnce();
+    expect(prompt).toHaveBeenCalledWith(expect.stringContaining("Response-language rule:"));
     expect(tuiState.latestEditor?.disableSubmit).toBe(true);
 
     tuiState.inputListeners[0]?.("escape");
@@ -113,6 +114,47 @@ describe("TUI turn lifecycle", () => {
     resolvePrompt?.();
     await vi.waitFor(() => expect(tuiState.latestEditor?.disableSubmit).toBe(false));
     expect(verificationMocks.runVerification).not.toHaveBeenCalled();
+    await app.shutdown();
+  });
+
+  it("passes each interactive user message with the dynamic response-language rule", async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    verificationMocks.runVerification.mockResolvedValue({
+      configured: true,
+      success: true,
+      changedFiles: [],
+      disallowedChangedFiles: [],
+      commands: [{ command: "npm test", status: "passed", exitCode: 0, stdout: "", stderr: "", outputTruncated: false, durationMs: 1 }]
+    });
+    const runtime = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        state: { messages: [] },
+        sessionId: "session",
+        sessionFile: undefined,
+        getSessionStats: () => ({ sessionId: "session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt,
+      abort: vi.fn(() => Promise.resolve()),
+      dispose: vi.fn()
+    } as unknown as PiRuntime;
+    const { CodingAgentTui } = await import("../src/tui/app.js");
+    const task = parseTaskSpec({ id: "language", objective: "Interactive coding task", verify: ["npm test"] });
+    const app = new CodingAgentTui({
+      runtime,
+      task,
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
+    });
+
+    app.start();
+    tuiState.latestEditor?.onSubmit?.("请修复 parser.ts 中的错误");
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    expect(prompt).toHaveBeenCalledWith(expect.stringContaining("Current user message:\n请修复 parser.ts 中的错误"));
+    expect(prompt).toHaveBeenCalledWith(expect.stringContaining("same primary natural language"));
+    await vi.waitFor(() => expect(verificationMocks.runVerification).toHaveBeenCalledOnce());
     await app.shutdown();
   });
 

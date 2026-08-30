@@ -5,12 +5,20 @@ function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function setupConfiguration(manifest: RunManifest): { source: string; commands: unknown[] } {
+  return manifest.setup
+    ? { source: manifest.setup.source, commands: manifest.setup.commands }
+    : { source: "disabled", commands: [] };
+}
+
 function configurationDifferences(original: RunManifest, replay: RunManifest): string[] {
   const differences: string[] = [];
   if (!equalJson(original.agent.model, replay.agent.model)) differences.push("model");
   if (original.agent.thinkingLevel !== replay.agent.thinkingLevel) differences.push("thinkingLevel");
   if (original.agent.sessionMode !== replay.agent.sessionMode) differences.push("sessionMode");
   if (original.agent.appVersion !== replay.agent.appVersion) differences.push("appVersion");
+  if (original.agent.promptPolicyVersion !== replay.agent.promptPolicyVersion) differences.push("promptPolicyVersion");
+  if (!equalJson(setupConfiguration(original), setupConfiguration(replay))) differences.push("setup");
   if (original.policy.allowShell !== replay.policy.allowShell) differences.push("allowShell");
   if (!equalJson(original.policy.allowedPaths, replay.policy.allowedPaths)) differences.push("allowedPaths");
   if (!equalJson(original.policy.tools, replay.policy.tools)) differences.push("tools");

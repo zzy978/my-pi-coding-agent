@@ -3,6 +3,8 @@ import { extname } from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 
+export const PROMPT_POLICY_VERSION = 1 as const;
+
 export interface VerificationSpec {
   command: string;
   timeoutMs: number;
@@ -106,5 +108,5 @@ export function createInteractiveTask(options: {
 
 export function formatTaskPrompt(task: TaskSpec, userInstruction?: string): string {
   const instruction = userInstruction?.trim() || task.objective;
-  return `Task ID: ${task.id}\nObjective: ${task.objective}\nAllowed changed paths: ${task.allowedPaths.join(", ")}\nVerification commands: ${task.verify.length ? task.verify.map((item) => item.command).join("; ") : "not configured"}\nDone when:\n${task.doneWhen.map((item) => `- ${item}`).join("\n")}\n\nCurrent instruction:\n${instruction}`;
+  return `Task ID: ${task.id}\nObjective: ${task.objective}\nAllowed changed paths: ${task.allowedPaths.join(", ")}\nVerification commands: ${task.verify.length ? task.verify.map((item) => item.command).join("; ") : "not configured"}\nDone when:\n${task.doneWhen.map((item) => `- ${item}`).join("\n")}\n\nCurrent user message:\n${instruction}\n\nResponse-language rule:\nRespond in the same primary natural language as the current user message above. If that message explicitly requests another response language, follow the explicit request. For mixed-language messages, use the dominant prose language and ignore code, identifiers, paths, commands, URLs, and quoted text when deciding. If the message has no identifiable prose language, use the task objective or the most recent meaningful user message. Do not infer the response language from the English task metadata.`;
 }

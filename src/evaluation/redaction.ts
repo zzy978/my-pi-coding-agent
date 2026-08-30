@@ -60,6 +60,13 @@ export function assertRecordableTask(task: TaskSpec): void {
   }
 }
 
+export function assertRecordableCommands(commands: Array<{ command: string }>, label: string): void {
+  const unsafeCommand = commands.find((item) => INLINE_SECRET.test(item.command));
+  if (unsafeCommand) {
+    throw new Error(`${label} command appears to contain an inline credential; use an environment-variable reference instead`);
+  }
+}
+
 export function sanitizeVerificationReport(report: VerificationReport): VerificationReport {
   return {
     ...report,

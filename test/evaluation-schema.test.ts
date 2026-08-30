@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { compareRuns } from "../src/evaluation/comparison.js";
-import { redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "../src/evaluation/redaction.js";
+import { assertRecordableCommands, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "../src/evaluation/redaction.js";
 import { createReplayPlan } from "../src/evaluation/replay.js";
 import {
   parseRunManifest,
@@ -85,6 +85,21 @@ describe("evaluation artifact schemas", () => {
     expect(sha256Json({ b: 2, a: 1 })).toBe(sha256Json({ a: 1, b: 2 }));
   });
 
+  it("round-trips setup evidence and prompt policy while accepting legacy manifests", () => {
+    const legacy = manifest();
+    expect(legacy.setup).toBeUndefined();
+    expect(legacy.agent.promptPolicyVersion).toBeUndefined();
+
+    const commands = [{ command: "npm ci", timeoutMs: 600_000 }];
+    const current = parseRunManifest({
+      ...legacy,
+      agent: { ...legacy.agent, promptPolicyVersion: 1 },
+      setup: { source: "auto", commands, sha256: sha256Json(commands) }
+    });
+    expect(current.setup).toEqual({ source: "auto", commands, sha256: sha256Json(commands) });
+    expect(current.agent.promptPolicyVersion).toBe(1);
+  });
+
   it("rejects missing fields, hash drift, and duplicated replay state", () => {
     const missing = structuredClone(manifest()) as unknown as Record<string, unknown>;
     delete ((missing.task as { content: Record<string, unknown> }).content).doneWhen;
@@ -125,6 +140,8 @@ describe("redaction and comparison", () => {
     expect(JSON.stringify(report)).not.toContain("API_KEY=secret");
     expect(report.commands[0]?.command).toContain("REDACTED");
     expect(redactSensitiveText("Authorization: Bearer abcdefgh")).not.toContain("abcdefgh");
+    expect(() => assertRecordableCommands([{ command: "tool --api-key=abcdefgh" }], "Setup"))
+      .toThrow("inline credential");
   });
 
   it.each([
@@ -150,7 +167,8 @@ describe("redaction and comparison", () => {
       allowShell: false,
       noSession: true,
       requestedModel: original.agent.model,
-      thinkingLevel: "off"
+      thinkingLevel: "off",
+      setupPreference: { mode: "disabled" }
     });
     plan.task.allowedPaths.push("extra.txt");
     expect(original.task.content.allowedPaths).toEqual(["result.txt"]);
@@ -159,6 +177,24 @@ describe("redaction and comparison", () => {
     const shellManifest = { ...original, policy: { ...original.policy, allowShell: true } };
     expect(() => createReplayPlan(shellManifest, false)).toThrow("requires explicit --unsafe-shell");
     expect(createReplayPlan(shellManifest, true).allowShell).toBe(true);
+  });
+
+  it("restores recorded setup while preserving legacy disabled semantics", () => {
+    const legacy = manifest();
+    expect(createReplayPlan(legacy, false).setupPreference).toEqual({ mode: "disabled" });
+
+    const commands = [{ command: "npm ci --ignore-scripts", timeoutMs: 600_000 }];
+    const current = parseRunManifest({
+      ...legacy,
+      setup: { source: "auto", commands, sha256: sha256Json(commands) }
+    });
+    expect(createReplayPlan(current, false).setupPreference).toEqual({
+      mode: "resolved",
+      plan: { source: "auto", commands }
+    });
+
+    const replay = { ...manifest("replay-one", "replay"), setup: { source: "disabled" as const, commands: [], sha256: sha256Json([]) } };
+    expect(compareRuns(legacy, result(), replay, result("replay-one")).configurationDifferences).not.toContain("setup");
   });
 
   it("marks critical model or context drift as not comparable", () => {
