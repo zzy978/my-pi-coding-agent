@@ -1,8 +1,8 @@
 import { link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { assertFilesystemContained, createSafeToolDefinitions } from "../src/policy/safe-tools.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertFilesystemContained, createApprovalGatedShellOperations, createSafeToolDefinitions } from "../src/policy/safe-tools.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -32,9 +32,32 @@ describe("filesystem containment", () => {
       .rejects.toThrow("symbolic link");
   });
 
-  it("keeps shell disabled unless explicitly requested", () => {
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"]).map((tool) => tool.name)).not.toContain(process.platform === "win32" ? "powershell" : "bash");
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"], true).map((tool) => tool.name)).toContain(process.platform === "win32" ? "powershell" : "bash");
+  it("includes shell by default and supports an explicit opt-out", () => {
+    expect(createSafeToolDefinitions(process.cwd(), ["**/*"]).map((tool) => tool.name)).toContain(process.platform === "win32" ? "powershell" : "bash");
+    expect(createSafeToolDefinitions(process.cwd(), ["**/*"], false).map((tool) => tool.name)).not.toContain(process.platform === "win32" ? "powershell" : "bash");
+  });
+
+  it("runs ordinary commands but gates deletion before spawning a process", async () => {
+    const exec = vi.fn(() => Promise.resolve({ exitCode: 0 }));
+    const approve = vi.fn(() => Promise.resolve(false));
+    const operations = createApprovalGatedShellOperations({ exec }, approve);
+    const options = { onData: vi.fn() };
+
+    await expect(operations.exec("npm test", process.cwd(), options)).resolves.toEqual({ exitCode: 0 });
+    expect(approve).not.toHaveBeenCalled();
+    expect(exec).toHaveBeenCalledOnce();
+
+    await expect(operations.exec("Remove-Item ./build -Recurse -Force", process.cwd(), options))
+      .rejects.toThrow("explicit human approval");
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({ command: "Remove-Item ./build -Recurse -Force" }));
+    expect(exec).toHaveBeenCalledOnce();
+
+    approve.mockResolvedValueOnce(true);
+    await expect(operations.exec("rm -rf ./build", process.cwd(), options)).resolves.toEqual({ exitCode: 0 });
+    expect(exec).toHaveBeenCalledTimes(2);
+
+    await expect(operations.exec("sudo rm -rf ./build", process.cwd(), options)).rejects.toThrow("privilege escalation");
+    expect(exec).toHaveBeenCalledTimes(2);
   });
 
   it("refuses to edit a hard-linked file", async () => {

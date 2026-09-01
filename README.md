@@ -11,6 +11,7 @@
 - 在每轮模型执行后运行确定性的验证命令。
 - 把任务、变更文件、验证输出和模型/会话信息写入 JSON 与 Markdown 报告。
 - 在 TUI 内新建持久会话、切换同一源仓库的已记录历史会话，或使用不落盘的临时会话。
+- 默认提供 Shell；识别到删除或丢弃工作区内容的命令时，在进程启动前要求人工单次审批，也可用 `--no-shell` 完全关闭 Shell。
 
 ## 环境要求
 
@@ -56,7 +57,9 @@ npm run dev -- D:\projects\my-repo --task "修复解析器并补充回归测试"
 
 显式 `--setup "npm ci"` 会访问包源并执行仓库定义的 lifecycle scripts，只适用于你信任的仓库；不受信任的仓库应避免执行 setup，并放入限制网络和凭据的容器或虚拟机。
 
-通用 Shell 默认关闭，因为它能以当前用户权限绕过文件路径策略。只有对仓库和任务输入都充分信任时才显式添加 `--unsafe-shell`。即使启用，`allowedPaths` 也不会成为 Shell 的强制边界；最终 Git 审计只能发现仓库内副作用，无法撤销它们或发现仓库外写入。
+Shell 默认启用；如当前仓库或任务不受信任，请添加 `--no-shell` 完全关闭。交互式 TUI 会在执行已识别的删除命令（例如 `rm`、`Remove-Item`、`git clean`）前显示命令并要求单次审批，默认选项为拒绝；没有交互界面的 record/replay 会直接拒绝这类命令。提权、系统级操作和 Git 历史写入仍会被永久拦截。
+
+审批是命令策略闸门，不是操作系统沙箱。任意解释器、项目脚本或自定义程序都可能隐藏删除副作用，因此 `allowedPaths` 仍不是 Shell 的强制边界；最终 Git 审计只能发现仓库内副作用，无法撤销它们或发现仓库外写入。对不受信任的仓库或任务，应在限制文件系统、网络和凭据的容器或虚拟机中运行。
 
 Agent 的自然语言回复跟随当前用户 message 的主要语言：中文提问默认中文回复，英文提问默认英文回复；message 中明确指定的输出语言优先。代码、命令、路径和标识符不会被当作语言判断依据。
 
@@ -101,7 +104,7 @@ pi-agent-tui --show-run <runId>
 pi-agent-tui --replay <runId>
 ```
 
-`--replay` 从原 manifest 固定的 Git commit 创建另一个全新 worktree，并恢复 TaskSpec、verifier、模型、thinking level 和工具策略。若原运行使用了 `--unsafe-shell`，回放必须再次显式授权；未使用 Shell 的运行不能在回放时升级权限。
+`--replay` 从原 manifest 固定的 Git commit 创建另一个全新 worktree，并恢复 TaskSpec、verifier、模型、thinking level 和工具策略。回放沿用原运行是否启用 Shell 的记录，不会因为当前默认值而升级或降低工具权限；显式且冲突的 `--no-shell`/兼容参数 `--unsafe-shell` 会被拒绝。
 
 每次运行在数据目录的 `runs/<runId>/` 下生成：
 

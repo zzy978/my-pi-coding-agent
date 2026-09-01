@@ -29,7 +29,7 @@ Options:
       --allow <glob>       Add an allowed changed-path glob (repeatable)
   -c, --continue          Continue the latest session for the source workspace
       --no-session        Do not persist the Pi session
-      --unsafe-shell      Enable the unrestricted shell tool (not constrained by allowedPaths)
+      --no-shell          Disable the Shell tool (enabled by default)
       --record            Run one headless, reproducible prompt and save evaluation artifacts
       --list-runs         List recorded controlled runs
       --show-run <runId>  Show a recorded manifest and result
@@ -98,7 +98,9 @@ async function handleRunManagement(options: CliOptions): Promise<number | undefi
 async function runControlled(options: CliOptions): Promise<number> {
   const original = options.replayRunId ? await loadRunBundle(options.replayRunId) : undefined;
   if (original && !original.result) throw new Error(`Run ${original.manifest.runId} has no completed result`);
-  const replayPlan = original ? createReplayPlan(original.manifest, options.unsafeShell) : undefined;
+  const replayPlan = original
+    ? createReplayPlan(original.manifest, options.shellExplicit ? options.shellEnabled : undefined)
+    : undefined;
   const sourceRepository = replayPlan?.sourceRepository ?? options.workspace;
   if (!existsSync(sourceRepository)) throw new Error(`Workspace does not exist: ${sourceRepository}`);
   const task = replayPlan?.task ?? await taskFromOptions(options);
@@ -129,7 +131,7 @@ async function runControlled(options: CliOptions): Promise<number> {
       getTask: () => task,
       continueSession: false,
       noSession,
-      allowShell: replayPlan?.allowShell ?? options.unsafeShell,
+      allowShell: replayPlan?.allowShell ?? options.shellEnabled,
       ...(replayPlan ? {
         requestedModel: replayPlan.requestedModel,
         thinkingLevel: replayPlan.thinkingLevel
@@ -152,7 +154,7 @@ async function runControlled(options: CliOptions): Promise<number> {
       runtime,
       task,
       workspace,
-      allowShell: replayPlan?.allowShell ?? options.unsafeShell,
+      allowShell: replayPlan?.allowShell ?? options.shellEnabled,
       noSession,
       setup,
       onStatus: (status) => console.error(status)
@@ -222,7 +224,7 @@ export async function run(options: CliOptions): Promise<number> {
       workspace: workspace.workspace,
       sourceRoot: workspace.sourceRoot,
       getTask: () => task,
-      allowShell: options.unsafeShell
+      allowShell: options.shellEnabled
     });
     const preferences = { objective: task.objective };
     runtime = options.noSession

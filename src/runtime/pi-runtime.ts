@@ -10,6 +10,7 @@ import { sha256Text } from "../evaluation/schema.js";
 import { createPolicyExtension } from "../policy/policy-extension.js";
 import { relativePathWithin } from "../policy/path-policy.js";
 import { createSafeToolDefinitions } from "../policy/safe-tools.js";
+import { ShellApprovalGate, type ShellApprovalHandler } from "../policy/shell-approval.js";
 
 export interface PiRuntimeOptions {
   workspace: string;
@@ -37,7 +38,8 @@ export class PiRuntime {
     diagnostics: readonly { type: "info" | "warning" | "error"; message: string }[],
     modelFallbackMessage: string | undefined,
     hasAvailableModel: boolean,
-    contextFiles: readonly { path: string; sha256: string }[]
+    contextFiles: readonly { path: string; sha256: string }[],
+    private readonly shellApproval: ShellApprovalGate
   ) {
     this.session = session;
     this.diagnostics = diagnostics;
@@ -48,6 +50,7 @@ export class PiRuntime {
 
   static async create(options: PiRuntimeOptions): Promise<PiRuntime> {
     const task = options.getTask();
+    const shellApproval = new ShellApprovalGate();
     const services = await createAgentSessionServices({
       cwd: options.workspace,
       resourceLoaderOptions: {
@@ -78,7 +81,12 @@ export class PiRuntime {
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
       noTools: "builtin",
-      customTools: createSafeToolDefinitions(options.workspace, task.allowedPaths, options.allowShell)
+      customTools: createSafeToolDefinitions(
+        options.workspace,
+        task.allowedPaths,
+        options.allowShell,
+        (request) => shellApproval.request(request)
+      )
     });
     const contextFiles = services.resourceLoader.getAgentsFiles().agentsFiles.map((file) => ({
       path: relativePathWithin(options.workspace, file.path) ?? `external:${basename(file.path)}`,
@@ -89,7 +97,8 @@ export class PiRuntime {
       services.diagnostics,
       result.modelFallbackMessage,
       availableModels.length > 0,
-      contextFiles
+      contextFiles,
+      shellApproval
     );
   }
 
@@ -109,6 +118,10 @@ export class PiRuntime {
     this.sessionObjective = objective.trim() || INTERACTIVE_TASK_OBJECTIVE;
   }
 
+  setShellApprovalHandler(handler: ShellApprovalHandler | undefined): void {
+    this.shellApproval.setHandler(handler);
+  }
+
   abort(): Promise<void> {
     return this.session.abort();
   }
@@ -116,6 +129,7 @@ export class PiRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.shellApproval.setHandler(undefined);
     try {
       this.session.dispose();
     } finally {

@@ -42,16 +42,30 @@ describe("path policy", () => {
 
 describe("command policy", () => {
   it.each([
-    "git reset --hard HEAD",
-    "git clean -fd",
     "git commit -am done",
-    "git checkout README.md",
-    "Remove-Item . -Recurse -Force",
-    "rm -rf ./build",
     "sudo npm test",
     "cd C:\\Windows"
   ])("blocks %s", (command) => {
     expect(checkCommand(command).allowed).toBe(false);
+  });
+
+  it.each([
+    "git reset --hard HEAD",
+    "git clean -fd",
+    "git rm obsolete.txt",
+    "git checkout README.md",
+    "Remove-Item ./build -Recurse -Force",
+    "rm -rf ./build",
+    "rm.exe -rf ./build",
+    "npx rimraf build",
+    "del output.txt",
+    "cmd /c del output.txt",
+    "find . -name '*.tmp' -delete",
+    "npm run clean",
+    "node -e \"fs.rmSync('build', { recursive: true })\"",
+    "powershell -Command \"[System.IO.File]::Delete('output.txt')\""
+  ])("requires approval for %s", (command) => {
+    expect(checkCommand(command)).toMatchObject({ allowed: true, requiresApproval: true });
   });
 
   it.each(["npm test", "git diff --stat", "Get-Content src/index.ts", "cd src; npm test"])("allows %s", (command) => {

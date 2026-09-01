@@ -3,7 +3,10 @@ import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "nod
 import { dirname } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  type BashOperations,
   createBashToolDefinition,
+  createLocalBashOperations,
+  createLocalPowerShellOperations,
   defineTool,
   createEditToolDefinition,
   createLsToolDefinition,
@@ -11,7 +14,9 @@ import {
   createReadToolDefinition,
   createWriteToolDefinition
 } from "@earendil-works/pi-coding-agent";
+import { checkCommand } from "./command-policy.js";
 import { assertReadablePath, assertWritablePath, relativePathWithin } from "./path-policy.js";
+import type { ShellApprovalHandler } from "./shell-approval.js";
 
 export async function assertFilesystemContained(workspace: string, targetPath: string): Promise<string> {
   const realWorkspace = await realpath(workspace);
@@ -49,7 +54,34 @@ async function safeWritablePath(workspace: string, targetPath: string, allowedPa
   return safePath;
 }
 
-export function createSafeToolDefinitions(workspace: string, allowedPaths: string[], includeShell = false): ToolDefinition[] {
+export function createApprovalGatedShellOperations(
+  operations: BashOperations,
+  requestApproval: ShellApprovalHandler
+): BashOperations {
+  return {
+    exec: async (command, cwd, options) => {
+      const policy = checkCommand(command);
+      if (!policy.allowed) {
+        throw new Error(`Command blocked: ${policy.reason ?? "policy violation"}`);
+      }
+      if (policy.requiresApproval) {
+        const approved = await requestApproval({
+          command,
+          reason: policy.reason ?? "shell command may delete data"
+        });
+        if (!approved) throw new Error("Deletion command denied: explicit human approval was not granted");
+      }
+      return operations.exec(command, cwd, options);
+    }
+  };
+}
+
+export function createSafeToolDefinitions(
+  workspace: string,
+  allowedPaths: string[],
+  includeShell = true,
+  requestApproval: ShellApprovalHandler = () => Promise.resolve(false)
+): ToolDefinition[] {
   const read = createReadToolDefinition(workspace, {
     operations: {
       readFile: async (absolutePath) => readFile(await safeReadablePath(workspace, absolutePath)),
@@ -72,9 +104,13 @@ export function createSafeToolDefinitions(workspace: string, allowedPaths: strin
       writeFile: async (absolutePath, content) => writeFile(await safeWritablePath(workspace, absolutePath, allowedPaths), content, "utf8")
     }
   });
+  const shellOperations = createApprovalGatedShellOperations(
+    process.platform === "win32" ? createLocalPowerShellOperations() : createLocalBashOperations(),
+    requestApproval
+  );
   const shell = process.platform === "win32"
-    ? createPowerShellToolDefinition(workspace)
-    : createBashToolDefinition(workspace);
+    ? createPowerShellToolDefinition(workspace, { operations: shellOperations })
+    : createBashToolDefinition(workspace, { operations: shellOperations });
   const fileTools: ToolDefinition[] = [
     defineTool(read),
     defineTool(edit),

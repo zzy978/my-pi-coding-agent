@@ -31,7 +31,8 @@ describe("parseCliArgs", () => {
     expect(options.setupCommands).toEqual(["npm ci", "npm run prepare"]);
     expect(options.noSetup).toBe(false);
     expect(options).not.toHaveProperty("inPlace");
-    expect(options.unsafeShell).toBe(true);
+    expect(options.shellEnabled).toBe(true);
+    expect(options.shellExplicit).toBe(true);
   });
 
   it("parses controlled-run management modes without changing the default workspace", () => {
@@ -44,7 +45,19 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--show-run", "run-123"], cwd)).toMatchObject({ showRunId: "run-123" });
     expect(parseCliArgs(["--replay", "run-123", "--unsafe-shell"], cwd)).toMatchObject({
       replayRunId: "run-123",
-      unsafeShell: true
+      shellEnabled: true,
+      shellExplicit: true
+    });
+  });
+
+  it("enables shell by default and supports an explicit opt-out", () => {
+    expect(parseCliArgs(["repo"], resolve("fixture-root"))).toMatchObject({
+      shellEnabled: true,
+      shellExplicit: false
+    });
+    expect(parseCliArgs(["repo", "--no-shell"], resolve("fixture-root"))).toMatchObject({
+      shellEnabled: false,
+      shellExplicit: true
     });
   });
 
@@ -62,6 +75,7 @@ describe("parseCliArgs", () => {
     [["--unknown"], "Unknown option"],
     [["--record"], "requires --task"],
     [["--setup", "npm ci", "--no-setup"], "cannot be combined"],
+    [["--unsafe-shell", "--no-shell"], "either --unsafe-shell or --no-shell"],
     [["repo", "--record", "--task", "x", "--in-place"], "fresh managed worktree"],
     [["repo", "--replay", "run-123"], "restores workspace"],
     [["--replay", "run-123", "--task", "x"], "restores workspace"],

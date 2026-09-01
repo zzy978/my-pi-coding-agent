@@ -10,7 +10,8 @@ export interface CliOptions {
   allowedPaths: string[];
   continueSession: boolean;
   noSession: boolean;
-  unsafeShell: boolean;
+  shellEnabled: boolean;
+  shellExplicit: boolean;
   record: boolean;
   listRuns: boolean;
   showRunId?: string;
@@ -48,7 +49,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let continueSession = false;
   let noSession = false;
   let legacyInPlace = false;
-  let unsafeShell = false;
+  let shellEnabled = true;
+  let shellExplicit = false;
   let record = false;
   let listRuns = false;
   let showRunId: string | undefined;
@@ -101,7 +103,14 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         legacyInPlace = true;
         break;
       case "--unsafe-shell":
-        unsafeShell = true;
+        if (shellExplicit && !shellEnabled) throw new CliUsageError("Use either --unsafe-shell or --no-shell, not both");
+        shellEnabled = true;
+        shellExplicit = true;
+        break;
+      case "--no-shell":
+        if (shellExplicit && shellEnabled) throw new CliUsageError("Use either --unsafe-shell or --no-shell, not both");
+        shellEnabled = false;
+        shellExplicit = true;
         break;
       case "--record":
         record = true;
@@ -151,9 +160,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   if (record && !task && !taskFile) throw new CliUsageError("--record requires --task or --task-file");
   if (record && (legacyInPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
   if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession)) {
-    throw new CliUsageError("--replay restores workspace and TaskSpec from the manifest; only --unsafe-shell may be added");
+    throw new CliUsageError("--replay restores workspace and TaskSpec from the manifest; only a Shell override may be added");
   }
-  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession || unsafeShell)) {
+  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession || shellExplicit)) {
     throw new CliUsageError("Run listing and inspection cannot be combined with execution options");
   }
   if (json && !(listRuns || showRunId)) throw new CliUsageError("--json requires --list-runs or --show-run");
@@ -168,7 +177,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     allowedPaths,
     continueSession,
     noSession,
-    unsafeShell,
+    shellEnabled,
+    shellExplicit,
     record,
     listRuns,
     ...(showRunId ? { showRunId } : {}),

@@ -160,7 +160,7 @@ describe("redaction and comparison", () => {
 
   it("restores replay parameters without silently changing shell authorization", () => {
     const original = manifest();
-    const plan = createReplayPlan(original, false);
+    const plan = createReplayPlan(original);
     expect(plan).toMatchObject({
       sourceRepository: original.sourceRepository,
       baselineCommit: original.baselineCommit,
@@ -172,23 +172,24 @@ describe("redaction and comparison", () => {
     });
     plan.task.allowedPaths.push("extra.txt");
     expect(original.task.content.allowedPaths).toEqual(["result.txt"]);
-    expect(() => createReplayPlan(original, true)).toThrow("cannot enable --unsafe-shell");
+    expect(() => createReplayPlan(original, true)).toThrow("cannot enable Shell");
 
     const shellManifest = { ...original, policy: { ...original.policy, allowShell: true } };
-    expect(() => createReplayPlan(shellManifest, false)).toThrow("requires explicit --unsafe-shell");
+    expect(createReplayPlan(shellManifest).allowShell).toBe(true);
+    expect(() => createReplayPlan(shellManifest, false)).toThrow("cannot disable Shell");
     expect(createReplayPlan(shellManifest, true).allowShell).toBe(true);
   });
 
   it("restores recorded setup while preserving legacy disabled semantics", () => {
     const legacy = manifest();
-    expect(createReplayPlan(legacy, false).setupPreference).toEqual({ mode: "disabled" });
+    expect(createReplayPlan(legacy).setupPreference).toEqual({ mode: "disabled" });
 
     const commands = [{ command: "npm ci --ignore-scripts", timeoutMs: 600_000 }];
     const current = parseRunManifest({
       ...legacy,
       setup: { source: "auto", commands, sha256: sha256Json(commands) }
     });
-    expect(createReplayPlan(current, false).setupPreference).toEqual({
+    expect(createReplayPlan(current).setupPreference).toEqual({
       mode: "resolved",
       plan: { source: "auto", commands }
     });

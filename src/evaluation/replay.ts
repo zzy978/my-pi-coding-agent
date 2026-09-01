@@ -14,13 +14,10 @@ export interface ReplayPlan {
   setupPreference: SetupPreference;
 }
 
-export function createReplayPlan(manifest: RunManifest, unsafeShellAuthorized: boolean): ReplayPlan {
+export function createReplayPlan(manifest: RunManifest, shellOverride?: boolean): ReplayPlan {
   if (!manifest.replayable) throw new Error(`Run ${manifest.runId} was not recorded from a managed worktree`);
-  if (manifest.policy.allowShell && !unsafeShellAuthorized) {
-    throw new Error("This run used unsafe shell access. Replay requires explicit --unsafe-shell authorization.");
-  }
-  if (!manifest.policy.allowShell && unsafeShellAuthorized) {
-    throw new Error("Replay cannot enable --unsafe-shell when the original run kept shell disabled.");
+  if (shellOverride !== undefined && manifest.policy.allowShell !== shellOverride) {
+    throw new Error(`Replay cannot ${shellOverride ? "enable" : "disable"} Shell when the recorded run used the opposite policy.`);
   }
   return {
     sourceRepository: manifest.sourceRepository,

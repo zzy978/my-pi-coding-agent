@@ -9,6 +9,7 @@ const tuiState = vi.hoisted(() => ({
     items: Array<{ value: string; label: string }>;
     onSelect: ((item: { value: string; label: string }) => void) | undefined;
     onCancel: (() => void) | undefined;
+    selectedIndex: number;
   } | undefined
 }));
 
@@ -55,11 +56,12 @@ vi.mock("@earendil-works/pi-tui", () => {
     SelectList: class {
       onSelect: ((item: { value: string; label: string }) => void) | undefined;
       onCancel: (() => void) | undefined;
+      selectedIndex = 0;
       constructor(public items: Array<{ value: string; label: string }>) { tuiState.latestSelectList = this; }
       handleInput(): void {}
       invalidate(): void {}
       render(): string[] { return []; }
-      setSelectedIndex(): void {}
+      setSelectedIndex(index: number): void { this.selectedIndex = index; }
     },
     Spacer: class {},
     Text: TextComponent,
@@ -87,6 +89,42 @@ describe("TUI turn lifecycle", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows a deny-by-default dialog and returns the human shell decision", async () => {
+    let approvalHandler: ((request: { command: string; reason: string }) => Promise<boolean>) | undefined;
+    const runtime = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        state: { messages: [] },
+        sessionId: "session",
+        sessionFile: undefined,
+        getSessionStats: () => ({ sessionId: "session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort: vi.fn(() => Promise.resolve()),
+      dispose: vi.fn(),
+      setShellApprovalHandler: vi.fn((handler: typeof approvalHandler) => { approvalHandler = handler; })
+    } as unknown as PiRuntime;
+    const { CodingAgentTui } = await import("../src/tui/app.js");
+    const task = parseTaskSpec({ id: "approval", objective: "clean build" });
+    const app = new CodingAgentTui({
+      runtime,
+      task,
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
+    });
+
+    const decision = approvalHandler?.({ command: "Remove-Item build -Recurse", reason: "deletion" });
+    expect(decision).toBeDefined();
+    expect(tuiState.latestSelectList?.selectedIndex).toBe(0);
+    const approveItem = tuiState.latestSelectList?.items[1];
+    if (!approveItem) throw new Error("Approval option was not rendered");
+    tuiState.latestSelectList?.onSelect?.(approveItem);
+    await expect(decision).resolves.toBe(true);
+    await app.shutdown();
   });
 
   it("keeps the turn busy and skips verification after abort", async () => {

@@ -13,6 +13,7 @@ import {
   type TUI
 } from "@earendil-works/pi-tui";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type { ShellApprovalRequest } from "../policy/shell-approval.js";
 import type { PiRuntime } from "../runtime/pi-runtime.js";
 import type { InteractiveSessionTarget, TuiSessionController } from "../runtime/interactive-sessions.js";
 import type { TaskSpec } from "../task/task-spec.js";
@@ -25,6 +26,7 @@ import { COMMAND_HELP, parseTuiCommand, type TuiCommand } from "./commands.js";
 import { messageText, toolResultText, userFacingMessageText } from "./message-format.js";
 import { editorTheme, markdownTheme } from "./theme.js";
 import { SessionPicker } from "./session-picker.js";
+import { ShellApprovalDialog } from "./shell-approval-dialog.js";
 
 interface TuiAppOptions {
   runtime: PiRuntime;
@@ -51,6 +53,7 @@ export class CodingAgentTui {
   private activeTurnId: number | undefined;
   private activePhase: "prompt" | "verification" | undefined;
   private readonly abortedTurns = new Set<number>();
+  private pendingApprovalCancel: (() => void) | undefined;
   private runtime: PiRuntime;
 
   constructor(private readonly options: TuiAppOptions) {
@@ -85,13 +88,19 @@ export class CodingAgentTui {
     this.tui.addChild(this.editor);
     this.tui.addChild(new Text(chalk.dim("Enter: send  •  Shift+Enter: newline  •  Esc: abort  •  Ctrl+C: abort/quit  •  /help"), 1, 0));
     this.tui.setFocus(this.editor);
+    this.bindShellApproval(this.runtime);
 
     this.tui.addInputListener((data) => {
+      if (matchesKey(data, Key.escape) && this.pendingApprovalCancel) {
+        this.pendingApprovalCancel();
+        return { consume: true };
+      }
       if (matchesKey(data, Key.escape) && this.busy) {
         void this.abortActive();
         return { consume: true };
       }
       if (matchesKey(data, Key.ctrl("c"))) {
+        this.pendingApprovalCancel?.();
         if (this.busy) void this.abortActive();
         else void this.shutdown();
         return { consume: true };
@@ -344,6 +353,7 @@ export class CodingAgentTui {
       throw error;
     }
     const previous = this.runtime;
+    this.bindShellApproval(replacement);
     this.unsubscribe?.();
     this.runtime = replacement;
     this.options.task.objective = replacement.conversationObjective || INTERACTIVE_TASK_OBJECTIVE;
@@ -362,6 +372,32 @@ export class CodingAgentTui {
     this.assistantComponent = undefined;
     this.assistantText = "";
     this.tui.requestRender();
+  }
+
+  private bindShellApproval(runtime: PiRuntime): void {
+    runtime.setShellApprovalHandler?.((request) => this.requestShellApproval(request));
+  }
+
+  private requestShellApproval(request: ShellApprovalRequest): Promise<boolean> {
+    if (this.shuttingDown) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const dialog = new ShellApprovalDialog(request);
+      const overlay = this.tui.showOverlay(dialog, { anchor: "center", width: "90%" });
+      let settled = false;
+      const finish = (approved: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (this.pendingApprovalCancel === cancel) this.pendingApprovalCancel = undefined;
+        overlay.hide();
+        this.tui.setFocus(this.editor);
+        this.setStatus(approved ? "Deletion approved; running tool…" : "Deletion denied");
+        resolve(approved);
+      };
+      const cancel = () => finish(false);
+      this.pendingApprovalCancel = cancel;
+      dialog.onDecision = finish;
+      this.setStatus("Waiting for deletion approval…");
+    });
   }
 
   private async runPrompt(instruction: string): Promise<void> {
@@ -503,6 +539,7 @@ export class CodingAgentTui {
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.pendingApprovalCancel?.();
     if (this.initialPromptTimer) {
       clearTimeout(this.initialPromptTimer);
       this.initialPromptTimer = undefined;
