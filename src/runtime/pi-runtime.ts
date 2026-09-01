@@ -4,7 +4,7 @@ import {
   createAgentSessionServices,
   SessionManager
 } from "@earendil-works/pi-coding-agent";
-import type { TaskSpec } from "../task/task-spec.js";
+import { INTERACTIVE_TASK_OBJECTIVE, type TaskSpec } from "../task/task-spec.js";
 import { basename } from "node:path";
 import { sha256Text } from "../evaluation/schema.js";
 import { createPolicyExtension } from "../policy/policy-extension.js";
@@ -30,6 +30,7 @@ export class PiRuntime {
   readonly modelFallbackMessage: string | undefined;
   readonly hasAvailableModel: boolean;
   readonly contextFiles: readonly { path: string; sha256: string }[];
+  private sessionObjective = INTERACTIVE_TASK_OBJECTIVE;
 
   private constructor(
     session: AgentSession,
@@ -98,6 +99,14 @@ export class PiRuntime {
 
   prompt(text: string): Promise<void> {
     return this.session.prompt(text);
+  }
+
+  get conversationObjective(): string {
+    return this.sessionObjective;
+  }
+
+  setConversationObjective(objective: string): void {
+    this.sessionObjective = objective.trim() || INTERACTIVE_TASK_OBJECTIVE;
   }
 
   abort(): Promise<void> {

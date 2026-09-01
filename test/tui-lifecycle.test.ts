@@ -233,6 +233,7 @@ describe("TUI turn lifecycle", () => {
     const replacement = {
       diagnostics: [],
       modelFallbackMessage: undefined,
+      conversationObjective: "Interactive coding task",
       session: {
         model: { provider: "test", id: "model" },
         thinkingLevel: "medium",
@@ -249,13 +250,20 @@ describe("TUI turn lifecycle", () => {
     const sessionController = {
       list: vi.fn(() => Promise.resolve([])),
       create: vi.fn(() => Promise.resolve(replacement)),
-      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement))
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement)),
+      updateObjective: vi.fn(() => Promise.resolve())
     };
     const { CodingAgentTui } = await import("../src/tui/app.js");
+    const task = parseTaskSpec({
+      id: "switch",
+      objective: "previous objective",
+      allowedPaths: ["src/**"],
+      verify: ["npm test"]
+    });
     const app = new CodingAgentTui({
       runtime: oldRuntime,
       sessionController,
-      task: parseTaskSpec({ id: "switch", objective: "switch sessions" }),
+      task,
       workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
     });
 
@@ -266,6 +274,9 @@ describe("TUI turn lifecycle", () => {
       model: { provider: "test", id: "model" },
       thinkingLevel: "medium"
     });
+    expect(task.objective).toBe("Interactive coding task");
+    expect(task.allowedPaths).toEqual(["src/**"]);
+    expect(task.verify).toEqual([{ command: "npm test", timeoutMs: 120_000 }]);
 
     await app.shutdown();
     expect(oldAbort).not.toHaveBeenCalled();
@@ -296,7 +307,8 @@ describe("TUI turn lifecycle", () => {
     const sessionController = {
       list: vi.fn(() => Promise.resolve([])),
       create: vi.fn(() => Promise.reject(new Error("replacement failed"))),
-      continueRecentOrCreate: vi.fn(() => Promise.resolve(runtime))
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(runtime)),
+      updateObjective: vi.fn(() => Promise.resolve())
     };
     const { CodingAgentTui } = await import("../src/tui/app.js");
     const app = new CodingAgentTui({
@@ -319,36 +331,39 @@ describe("TUI turn lifecycle", () => {
 
   it("opens /sessions and switches to the selected persistent session", async () => {
     const oldDispose = vi.fn();
+    const oldPrompt = vi.fn(() => Promise.resolve());
     const oldRuntime = {
       diagnostics: [],
       modelFallbackMessage: undefined,
       session: {
         model: { provider: "test", id: "model" },
         thinkingLevel: "medium",
-        state: { messages: [] },
+        state: { messages: [{ role: "user", content: "为我创建一个散点图" }] },
         sessionId: "old-session",
         sessionFile: "old.jsonl",
         getSessionStats: () => ({ sessionId: "old-session", tokens: { total: 0 }, cost: 0 })
       },
       subscribe: () => () => undefined,
-      prompt: vi.fn(() => Promise.resolve()),
+      prompt: oldPrompt,
       abort: vi.fn(() => Promise.resolve()),
       dispose: oldDispose
     } as unknown as PiRuntime;
     const replacementDispose = vi.fn();
+    const replacementPrompt = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
     const replacement = {
       diagnostics: [],
       modelFallbackMessage: undefined,
+      conversationObjective: "修复目标 session 的解析器",
       session: {
         model: { provider: "test", id: "model" },
         thinkingLevel: "medium",
-        state: { messages: [] },
+        state: { messages: [{ role: "user", content: "请修复 parser.ts" }] },
         sessionId: "selected-session",
         sessionFile: "selected.jsonl",
         getSessionStats: () => ({ sessionId: "selected-session", tokens: { total: 0 }, cost: 0 })
       },
       subscribe: () => () => undefined,
-      prompt: vi.fn(() => Promise.resolve()),
+      prompt: replacementPrompt,
       abort: vi.fn(() => Promise.resolve()),
       dispose: replacementDispose
     } as unknown as PiRuntime;
@@ -361,18 +376,26 @@ describe("TUI turn lifecycle", () => {
       messageCount: 2,
       firstMessage: "selected task",
       allMessagesText: "selected task",
-      materialized: true
+      materialized: true,
+      objective: "修复目标 session 的解析器"
     };
     const sessionController = {
       list: vi.fn(() => Promise.resolve([selectedSession])),
       create: vi.fn(() => Promise.resolve(replacement)),
-      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement))
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement)),
+      updateObjective: vi.fn(() => Promise.resolve())
     };
     const { CodingAgentTui } = await import("../src/tui/app.js");
+    const task = parseTaskSpec({
+      id: "picker",
+      objective: "为我创建一个散点图",
+      allowedPaths: ["src/**"],
+      verify: ["npm test"]
+    });
     const app = new CodingAgentTui({
       runtime: oldRuntime,
       sessionController,
-      task: parseTaskSpec({ id: "picker", objective: "select session" }),
+      task,
       workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
     });
 
@@ -385,6 +408,24 @@ describe("TUI turn lifecycle", () => {
 
     await vi.waitFor(() => expect(oldDispose).toHaveBeenCalledOnce());
     expect(sessionController.create).toHaveBeenCalledWith({ type: "open", session: selectedSession }, undefined);
+    verificationMocks.runVerification.mockResolvedValue({
+      configured: true,
+      success: true,
+      changedFiles: [],
+      disallowedChangedFiles: [],
+      commands: []
+    });
+    tuiState.latestEditor?.onSubmit?.("我上一个问题是什么");
+    await vi.waitFor(() => expect(replacementPrompt).toHaveBeenCalledOnce());
+    const switchedPrompt = replacementPrompt.mock.calls[0]?.[0] ?? "";
+    expect(switchedPrompt).toContain("Objective: 修复目标 session 的解析器");
+    expect(switchedPrompt).toContain("Current user message:\n我上一个问题是什么");
+    expect(switchedPrompt).toContain("Allowed changed paths: src/**");
+    expect(switchedPrompt).toContain("Verification commands: npm test");
+    expect(switchedPrompt).not.toContain("为我创建一个散点图");
+    expect(oldPrompt).not.toHaveBeenCalled();
+    expect(task.allowedPaths).toEqual(["src/**"]);
+    expect(task.verify).toEqual([{ command: "npm test", timeoutMs: 120_000 }]);
     await app.shutdown();
     expect(replacementDispose).toHaveBeenCalledOnce();
   });

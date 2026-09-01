@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 
 export const PROMPT_POLICY_VERSION = 1 as const;
+export const INTERACTIVE_TASK_OBJECTIVE = "Interactive coding task";
 
 export interface VerificationSpec {
   command: string;
@@ -96,7 +97,7 @@ export function createInteractiveTask(options: {
 }): TaskSpec {
   return {
     id: randomUUID(),
-    objective: options.objective?.trim() || "Interactive coding task",
+    objective: options.objective?.trim() || INTERACTIVE_TASK_OBJECTIVE,
     allowedPaths: options.allowedPaths?.length ? [...new Set(options.allowedPaths)] : ["**/*"],
     verify: (options.verifyCommands ?? []).map((command) => ({ command, timeoutMs: 120_000 })),
     doneWhen: [

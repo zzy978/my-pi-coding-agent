@@ -47,6 +47,21 @@ describe("Git workspace", () => {
       .rejects.toThrowError(WorkspaceError);
   });
 
+  it("uses the current checkout and preserves existing changes for interactive work", async () => {
+    const { repository } = await temporaryRepository();
+    await writeFile(join(repository, "dirty.txt"), "keep me\n", "utf8");
+
+    const result = await prepareWorkspace(repository, { inPlace: true });
+
+    expect(result).toMatchObject({
+      sourceRoot: repository,
+      workspace: repository,
+      managedWorktree: false
+    });
+    expect(result.branch).not.toBe("(detached)");
+    await expect(readFile(join(repository, "dirty.txt"), "utf8")).resolves.toBe("keep me\n");
+  });
+
   it("creates an isolated branch and worktree for a clean source", async () => {
     const { parent, repository } = await temporaryRepository();
     const result = await prepareWorkspace(repository, { inPlace: false, dataDirectory: join(parent, "data") });

@@ -7,6 +7,7 @@ import { runProcess } from "../src/runtime/process.js";
 import { discardManagedWorkspace, prepareWorkspace } from "../src/workspace/git.js";
 import {
   prepareReadyWorkspace,
+  prepareReadyCurrentWorkspace,
   resolveSetupPlan,
   runWorkspaceSetup,
   setupPreferenceFromCli,
@@ -60,6 +61,21 @@ afterEach(async () => {
 });
 
 describe("workspace setup", () => {
+  it("prepares interactive work directly in a dirty current checkout without automatic setup", async () => {
+    const { repository } = await repositoryWithPackageLock();
+    await writeFile(join(repository, "existing-change.txt"), "preserve\n", "utf8");
+
+    const ready = await prepareReadyCurrentWorkspace(repository, { mode: "auto" });
+
+    expect(ready.workspace).toMatchObject({
+      sourceRoot: repository,
+      workspace: repository,
+      managedWorktree: false
+    });
+    expect(ready.setup).toEqual({ source: "auto", commands: [] });
+    await expect(access(join(repository, "existing-change.txt"))).resolves.toBeUndefined();
+  });
+
   it("auto-detects package-lock.json only for managed worktrees", async () => {
     const { parent, repository } = await repositoryWithPackageLock();
     const managed = await prepareWorkspace(repository, { inPlace: false, dataDirectory: join(parent, "data") });

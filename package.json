@@ -1,7 +1,7 @@
 {
   "name": "pi-tui-coding-agent",
   "version": "0.1.0",
-  "description": "A verifiable, worktree-first TUI coding agent built on Pi",
+  "description": "A verifiable in-place TUI coding agent built on Pi",
   "type": "module",
   "bin": {
     "pi-agent-tui": "dist/cli.js"

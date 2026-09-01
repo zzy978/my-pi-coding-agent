@@ -3,7 +3,7 @@ import { APP_NAME, APP_VERSION } from "./config.js";
 import type { CliOptions } from "./cli-args.js";
 import { loadTaskSpec, createInteractiveTask } from "./task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace } from "./workspace/git.js";
-import { prepareReadyWorkspace, resolveSetupPlan, setupPreferenceFromCli } from "./workspace/setup.js";
+import { prepareReadyCurrentWorkspace, resolveSetupPlan, setupPreferenceFromCli } from "./workspace/setup.js";
 import { PiRuntime } from "./runtime/pi-runtime.js";
 import { CodingAgentTui } from "./tui/app.js";
 import { runDoctor } from "./doctor.js";
@@ -24,12 +24,11 @@ Options:
   -t, --task <text>       Start with a task objective
       --task-file <path>  Load a YAML or JSON TaskSpec
       --verify <command>  Add a verification command (repeatable)
-      --setup <command>   Replace automatic worktree setup (repeatable)
-      --no-setup          Disable automatic worktree setup
+      --setup <command>   Run a setup command before the TUI starts (repeatable)
+      --no-setup          Disable setup commands
       --allow <glob>       Add an allowed changed-path glob (repeatable)
   -c, --continue          Continue the latest session for the source workspace
       --no-session        Do not persist the Pi session
-      --in-place          Work in the source checkout instead of a managed worktree
       --unsafe-shell      Enable the unrestricted shell tool (not constrained by allowedPaths)
       --record            Run one headless, reproducible prompt and save evaluation artifacts
       --list-runs         List recorded controlled runs
@@ -40,9 +39,9 @@ Options:
   -h, --help              Show help
   -v, --version           Show version
 
-By default a clean source repository is required and a managed Git worktree is created.
-Managed Node.js worktrees with package-lock.json run npm ci --ignore-scripts before the agent starts.
-Worktrees reduce source-checkout risk but are not a container security boundary.`;
+Interactive tasks run directly in the repository's current checkout and preserve existing Git changes.
+Use --record or --replay only when you explicitly need a fresh, reproducible worktree.
+Git and path policies are guardrails, not a sandbox or automatic rollback mechanism.`;
 }
 
 async function taskFromOptions(options: CliOptions) {
@@ -208,10 +207,10 @@ export async function run(options: CliOptions): Promise<number> {
   }
 
   const task = await taskFromOptions(options);
+  const initialPrompt = options.task || options.taskFile ? task.objective : undefined;
 
-  const ready = await prepareReadyWorkspace(
+  const ready = await prepareReadyCurrentWorkspace(
     options.workspace,
-    { inPlace: options.inPlace },
     setupPreferenceFromCli(options.setupCommands, options.noSetup),
     (command, index, total) => console.error(`Setup ${index + 1}/${total}: ${command}`)
   );
@@ -225,11 +224,22 @@ export async function run(options: CliOptions): Promise<number> {
       getTask: () => task,
       allowShell: options.unsafeShell
     });
+    const preferences = { objective: task.objective };
     runtime = options.noSession
-      ? await sessionController.create({ type: "temporary" })
+      ? await sessionController.create({ type: "temporary" }, preferences)
       : options.continueSession
-        ? await sessionController.continueRecentOrCreate()
-        : await sessionController.create({ type: "new" });
+        ? await sessionController.continueRecentOrCreate(preferences)
+        : await sessionController.create({ type: "new" }, preferences);
+    task.objective = runtime.conversationObjective;
+    if (initialPrompt && initialPrompt !== task.objective) {
+      try {
+        await sessionController.updateObjective(runtime, initialPrompt);
+        task.objective = initialPrompt;
+      } catch (error) {
+        runtime.dispose();
+        throw error;
+      }
+    }
   } catch (error) {
     await discardManagedWorkspace(workspace);
     throw error;
@@ -241,7 +251,7 @@ export async function run(options: CliOptions): Promise<number> {
       task,
       workspace,
       sessionController,
-      ...(options.task || options.taskFile ? { initialPrompt: task.objective } : {})
+      ...(initialPrompt ? { initialPrompt } : {})
     });
     app.start();
   } catch (error) {

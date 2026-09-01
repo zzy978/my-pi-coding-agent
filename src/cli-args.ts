@@ -10,7 +10,6 @@ export interface CliOptions {
   allowedPaths: string[];
   continueSession: boolean;
   noSession: boolean;
-  inPlace: boolean;
   unsafeShell: boolean;
   record: boolean;
   listRuns: boolean;
@@ -48,7 +47,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   const allowedPaths: string[] = [];
   let continueSession = false;
   let noSession = false;
-  let inPlace = false;
+  let legacyInPlace = false;
   let unsafeShell = false;
   let record = false;
   let listRuns = false;
@@ -99,7 +98,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         noSession = true;
         break;
       case "--in-place":
-        inPlace = true;
+        legacyInPlace = true;
         break;
       case "--unsafe-shell":
         unsafeShell = true;
@@ -150,11 +149,11 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   if (record && managementModes > 0) throw new CliUsageError("--record cannot be combined with run management options");
   if (noSetup && setupCommands.length > 0) throw new CliUsageError("--setup cannot be combined with --no-setup");
   if (record && !task && !taskFile) throw new CliUsageError("--record requires --task or --task-file");
-  if (record && (inPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
-  if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || inPlace || continueSession || noSession)) {
+  if (record && (legacyInPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
+  if (replayRunId && (positionalWorkspace || workspace !== cwd || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession)) {
     throw new CliUsageError("--replay restores workspace and TaskSpec from the manifest; only --unsafe-shell may be added");
   }
-  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || inPlace || continueSession || noSession || unsafeShell)) {
+  if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession || unsafeShell)) {
     throw new CliUsageError("Run listing and inspection cannot be combined with execution options");
   }
   if (json && !(listRuns || showRunId)) throw new CliUsageError("--json requires --list-runs or --show-run");
@@ -169,7 +168,6 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     allowedPaths,
     continueSession,
     noSession,
-    inPlace,
     unsafeShell,
     record,
     listRuns,

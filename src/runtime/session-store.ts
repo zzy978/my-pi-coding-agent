@@ -16,6 +16,7 @@ interface SessionRecord {
   path: string;
   cwd: string;
   recordedAt: string;
+  objective?: string;
 }
 
 interface SessionLock {
@@ -26,6 +27,7 @@ interface SessionLock {
 
 export interface StoredSessionInfo extends SessionInfo {
   materialized: boolean;
+  objective?: string;
 }
 
 function canonicalPath(path: string): string {
@@ -57,6 +59,7 @@ function parseRecord(value: unknown): SessionRecord | undefined {
   if (record.version !== 1 || typeof record.id !== "string" || !record.id
     || typeof record.path !== "string" || !record.path
     || typeof record.cwd !== "string" || typeof record.recordedAt !== "string"
+    || (record.objective !== undefined && (typeof record.objective !== "string" || !record.objective.trim()))
     || Number.isNaN(new Date(record.recordedAt).getTime())) return undefined;
   return record as SessionRecord;
 }
@@ -68,6 +71,7 @@ export class WorkspaceSessionStore {
   private readonly metadataPath: string;
   private readonly recordsDirectory: string;
   private readonly locksDirectory: string;
+  private lastRecordTimestamp = 0;
 
   private constructor(sourceRoot: string, dataDirectory: string) {
     this.sourceRoot = resolve(sourceRoot);
@@ -103,11 +107,15 @@ export class WorkspaceSessionStore {
       recordsById.set(record.id, group);
     }
     for (const [id, group] of recordsById) {
-      if (byId.has(id)) continue;
       group.sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
       const first = group[0];
       const latest = group.at(-1);
       if (!first || !latest) continue;
+      const materialized = byId.get(id);
+      if (materialized) {
+        if (latest.objective) materialized.objective = latest.objective;
+        continue;
+      }
       if (existsSync(latest.path)) continue;
       byId.set(id, {
         id,
@@ -118,21 +126,25 @@ export class WorkspaceSessionStore {
         messageCount: 0,
         firstMessage: "(no messages)",
         allMessagesText: "",
-        materialized: false
+        materialized: false,
+        ...(latest.objective ? { objective: latest.objective } : {})
       });
     }
     return [...byId.values()].sort((left, right) => right.modified.getTime() - left.modified.getTime());
   }
 
-  async record(session: { id: string; path: string; cwd: string }): Promise<void> {
+  async record(session: { id: string; path: string; cwd: string; objective?: string }): Promise<void> {
+    const timestamp = Math.max(Date.now(), this.lastRecordTimestamp + 1);
+    this.lastRecordTimestamp = timestamp;
     const record: SessionRecord = {
       version: 1,
       id: session.id,
       path: resolve(session.path),
       cwd: resolve(session.cwd),
-      recordedAt: new Date().toISOString()
+      recordedAt: new Date(timestamp).toISOString(),
+      ...(session.objective?.trim() ? { objective: session.objective.trim() } : {})
     };
-    const name = `${Date.now()}-${randomUUID()}.json`;
+    const name = `${timestamp}-${randomUUID()}.json`;
     await this.atomicCreate(join(this.recordsDirectory, name), `${JSON.stringify(record)}\n`);
   }
 

@@ -16,7 +16,7 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { PiRuntime } from "../runtime/pi-runtime.js";
 import type { InteractiveSessionTarget, TuiSessionController } from "../runtime/interactive-sessions.js";
 import type { TaskSpec } from "../task/task-spec.js";
-import { formatTaskPrompt } from "../task/task-spec.js";
+import { formatTaskPrompt, INTERACTIVE_TASK_OBJECTIVE } from "../task/task-spec.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
 import { getDiff } from "../workspace/git.js";
 import { formatVerificationSummary, runVerification, type VerificationReport } from "../verifier/verifier.js";
@@ -124,7 +124,7 @@ export class CodingAgentTui {
   private headerText(): string {
     const model = this.runtime.session.model;
     const modelText = model ? `${model.provider}/${model.id}` : "no model";
-    const isolation = this.options.workspace.managedWorktree ? "managed worktree" : "in-place";
+    const isolation = this.options.workspace.managedWorktree ? "managed worktree" : "current checkout";
     return chalk.bold.cyan("PI TUI CODING AGENT") + `  ${modelText}  •  ${isolation}  •  ${this.options.workspace.branch}`;
   }
 
@@ -227,7 +227,7 @@ export class CodingAgentTui {
       case "task":
         if (!command.value) this.addPlain("Usage: /task <objective>", "warning");
         else {
-          this.options.task.objective = command.value;
+          await this.setConversationObjective(command.value);
           this.addPlain(`Task objective updated: ${command.value}`, "info");
         }
         break;
@@ -346,6 +346,7 @@ export class CodingAgentTui {
     const previous = this.runtime;
     this.unsubscribe?.();
     this.runtime = replacement;
+    this.options.task.objective = replacement.conversationObjective || INTERACTIVE_TASK_OBJECTIVE;
     this.unsubscribe = replacementSubscription;
     previous.dispose();
     this.resetTranscript();
@@ -369,7 +370,9 @@ export class CodingAgentTui {
       this.addPlain("A turn or verification is already running.", "warning");
       return;
     }
-    if (this.options.task.objective === "Interactive coding task") this.options.task.objective = instruction;
+    if (this.options.task.objective === INTERACTIVE_TASK_OBJECTIVE) {
+      await this.setConversationObjective(instruction);
+    }
     this.addMarkdown(`**You**\n\n${instruction}`);
     const turnId = ++this.nextTurnId;
     this.activeTurnId = turnId;
@@ -388,6 +391,14 @@ export class CodingAgentTui {
         this.setBusy(false);
       }
     }
+  }
+
+  private async setConversationObjective(objective: string): Promise<void> {
+    const normalized = objective.trim() || INTERACTIVE_TASK_OBJECTIVE;
+    const controller = this.options.sessionController;
+    if (controller) await controller.updateObjective(this.runtime, normalized);
+    else this.runtime.setConversationObjective?.(normalized);
+    this.options.task.objective = normalized;
   }
 
   private async verifyAndReport(alreadyBusy = false): Promise<VerificationReport | undefined> {

@@ -1,12 +1,12 @@
 # Pi TUI Coding Agent
 
-一个建立在 [Pi coding-agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) 之上的终端编程代理。它保留 Pi 的模型、会话和工具事件能力，增加了任务边界、Git worktree、可重复验证和运行报告。
+一个建立在 [Pi coding-agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) 之上的终端编程代理。它保留 Pi 的模型、会话和工具事件能力，增加了任务边界、可重复验证和运行报告。
 
 ## 能做什么
 
 - 在终端里流式显示模型回复、推理状态和并行工具调用。
 - 从自然语言或 YAML/JSON `TaskSpec` 接收任务。
-- 默认从干净的源仓库创建独立 Git worktree 和 `agent/*` 分支。
+- 直接在当前 Git 检出目录中执行交互任务，不额外创建 worktree 或分支。
 - 对 `write`/`edit` 文件工具强制执行 `allowedPaths`，并在验证后审计全部 Git 变更；`.git`、`.env*` 和 `node_modules` 始终禁止写入。
 - 在每轮模型执行后运行确定性的验证命令。
 - 把任务、变更文件、验证输出和模型/会话信息写入 JSON 与 Markdown 报告。
@@ -48,13 +48,13 @@ Windows PowerShell 示例：
 npm run dev -- D:\projects\my-repo --task "修复解析器并补充回归测试" --verify "npm test"
 ```
 
-默认要求源仓库没有未提交变更，然后创建托管 worktree。只有在明确接受直接修改当前检出目录时才使用 `--in-place`。持久会话按稳定的源仓库路径归组，因此 `--continue` 和 TUI 内的 `/sessions` 都可以在新建的 managed worktree 中恢复对话上下文。
+交互式 TUI 直接在指定仓库的当前检出目录中工作，允许保留已有的未提交变更，不会创建 `agent/*` 分支或额外 worktree。持久会话按仓库根目录归组，因此 `--continue` 和 TUI 内的 `/sessions` 会在同一个当前检出目录中恢复对话上下文。
 
-会话恢复只恢复模型的对话上下文，并继续在本次启动的当前 workspace 中工作；它不会自动切换到旧分支，也不会还原旧 worktree 中尚未合并的文件改动。跨 workspace 切换会话时，TUI 会显示这一边界提示。
+会话恢复只恢复模型的对话上下文，并继续在当前检出目录中工作；它不会自动切换到会话曾使用的旧分支，也不会还原当时尚未提交的文件状态。
 
-托管 worktree 创建后会先执行初始化：若仓库根目录存在 `package-lock.json`，默认运行一次 `npm ci --ignore-scripts`，成功后才启动 Agent。可使用可重复的 `--setup "<命令>"` 完全替代自动初始化，或用 `--no-setup` 关闭；确实需要 lifecycle scripts 的受信仓库可显式传入 `--setup "npm ci"`。`--in-place` 模式默认不自动安装依赖。setup 失败或产生 Git 变更时，本次 worktree 会被清理，模型不会启动。
+交互式 TUI 不会自动重复安装依赖。确有需要时，可使用可重复的 `--setup "<命令>"` 在启动 Agent 前显式执行初始化，或用 `--no-setup` 禁止 setup。显式 setup 直接在当前检出目录执行，因此只应运行你理解并信任的命令。
 
-自动初始化关闭 npm lifecycle scripts，但安装过程仍会访问包源并处理仓库依赖。显式 `--setup "npm ci"` 会执行仓库定义的 lifecycle scripts，只适用于你信任的仓库；不受信任的仓库应使用 `--no-setup`，并放入限制网络和凭据的容器或虚拟机。
+显式 `--setup "npm ci"` 会访问包源并执行仓库定义的 lifecycle scripts，只适用于你信任的仓库；不受信任的仓库应避免执行 setup，并放入限制网络和凭据的容器或虚拟机。
 
 通用 Shell 默认关闭，因为它能以当前用户权限绕过文件路径策略。只有对仓库和任务输入都充分信任时才显式添加 `--unsafe-shell`。即使启用，`allowedPaths` 也不会成为 Shell 的强制边界；最终 Git 审计只能发现仓库内副作用，无法撤销它们或发现仓库外写入。
 
@@ -139,7 +139,7 @@ comparison.json/.md（回放）原始运行与回放的对比报告
 
 ## 数据位置
 
-会话内容仍使用 Pi 的 JSONL 格式；本项目按源仓库路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。会话、worktree 和报告默认保存在：
+会话内容仍使用 Pi 的 JSONL 格式；本项目按源仓库路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。会话、受控运行使用的临时 worktree 和报告默认保存在：
 
 - Windows：`%LOCALAPPDATA%\pi-tui-coding-agent`
 - macOS：`~/Library/Application Support/pi-tui-coding-agent`
@@ -149,7 +149,7 @@ comparison.json/.md（回放）原始运行与回放的对比报告
 
 ## 安全边界
 
-托管 worktree、路径白名单和命令拦截属于降低误操作风险的护栏，不是强隔离沙箱。Shell 进程仍以当前用户权限运行，无法可靠抵御恶意提示、恶意仓库内容或蓄意绕过。
+路径白名单、命令拦截和 Git 变更审计属于降低误操作风险的护栏，不是自动回滚机制或强隔离沙箱。Git 不会自动保护未提交改动和未跟踪文件；Shell 进程仍以当前用户权限运行，无法可靠抵御恶意提示、恶意仓库内容或蓄意绕过。
 
 处理不受信任的仓库或需要更强保证时，应在容器或虚拟机中运行，并限制网络、凭据挂载、CPU、内存、进程数和可写目录。不要把生产密钥放入代理进程环境。
 
@@ -167,7 +167,7 @@ npm run build
 - `src/runtime/pi-runtime.ts`：Pi 会话和扩展装配。
 - `src/tui/app.ts`：终端界面与事件渲染。
 - `src/policy/`：路径和命令护栏。
-- `src/workspace/git.ts`：Git worktree 生命周期。
+- `src/workspace/git.ts`：当前检出目录解析，以及受控记录/回放使用的 worktree 生命周期。
 - `src/verifier/verifier.ts`：确定性验证。
 - `src/report/report.ts`：运行证据报告。
 - `src/evaluation/`：受控运行、manifest、Trace、回放与对比。

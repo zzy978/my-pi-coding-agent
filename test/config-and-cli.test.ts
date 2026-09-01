@@ -30,7 +30,7 @@ describe("parseCliArgs", () => {
     expect(options.verifyCommands).toEqual(["npm test", "npm run check"]);
     expect(options.setupCommands).toEqual(["npm ci", "npm run prepare"]);
     expect(options.noSetup).toBe(false);
-    expect(options.inPlace).toBe(true);
+    expect(options).not.toHaveProperty("inPlace");
     expect(options.unsafeShell).toBe(true);
   });
 
@@ -48,11 +48,11 @@ describe("parseCliArgs", () => {
     });
   });
 
-  it("allows continuing a workspace session in a managed worktree", () => {
+  it("continues workspace sessions without exposing a worktree mode", () => {
     expect(parseCliArgs(["repo", "--continue"], resolve("fixture-root"))).toMatchObject({
-      continueSession: true,
-      inPlace: false
+      continueSession: true
     });
+    expect(parseCliArgs(["repo", "--continue"], resolve("fixture-root"))).not.toHaveProperty("inPlace");
   });
 
   it.each([

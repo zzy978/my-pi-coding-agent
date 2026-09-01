@@ -13,6 +13,7 @@ vi.mock("../src/runtime/pi-runtime.js", () => ({
 }));
 
 import { InteractiveSessionController } from "../src/runtime/interactive-sessions.js";
+import { INTERACTIVE_TASK_OBJECTIVE } from "../src/task/task-spec.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -49,13 +50,17 @@ async function controllerFixture() {
 
 function runtimeFixture(sessionFile: string | undefined, sessionId = "55555555-5555-4555-8555-555555555555") {
   const appendCustomEntry = vi.fn<(customType: string, data?: unknown) => string>(() => "entry-id");
+  const getEntries = vi.fn(() => []);
+  let conversationObjective = INTERACTIVE_TASK_OBJECTIVE;
   let disposeHandler: (() => void) | undefined;
   const dispose = vi.fn(() => disposeHandler?.());
   const onDispose = vi.fn((handler: () => void) => { disposeHandler = handler; });
   return {
     runtime: {
       hasAvailableModel: true,
-      session: { sessionManager: { appendCustomEntry }, sessionFile, sessionId },
+      session: { sessionManager: { appendCustomEntry, getEntries }, sessionFile, sessionId },
+      get conversationObjective() { return conversationObjective; },
+      setConversationObjective: vi.fn((objective: string) => { conversationObjective = objective; }),
       dispose,
       onDispose
     },
@@ -72,7 +77,8 @@ describe("InteractiveSessionController", () => {
 
     await controller.create({ type: "new" }, {
       model: { provider: "provider", id: "model" },
-      thinkingLevel: "medium"
+      thinkingLevel: "medium",
+      objective: "startup objective"
     });
 
     const createOptions = runtimeMocks.create.mock.calls[0]?.[0];
@@ -85,8 +91,9 @@ describe("InteractiveSessionController", () => {
     });
     expect(createOptions?.sessionDirectory).toContain(join("sessions", ""));
     expect(fixture.appendCustomEntry.mock.calls[0]?.[0]).toBe("pi-tui-session");
-    const marker = fixture.appendCustomEntry.mock.calls[0]?.[1] as { sourceRoot?: unknown } | undefined;
+    const marker = fixture.appendCustomEntry.mock.calls[0]?.[1] as { sourceRoot?: unknown; objective?: unknown } | undefined;
     expect(typeof marker?.sourceRoot).toBe("string");
+    expect(marker?.objective).toBe("startup objective");
     expect(await controller.list()).toEqual([
       expect.objectContaining({
         id: "55555555-5555-4555-8555-555555555555",
@@ -117,7 +124,8 @@ describe("InteractiveSessionController", () => {
         messageCount: 2,
         firstMessage: "old task",
         allMessagesText: "old task",
-        materialized: true
+        materialized: true,
+        objective: "stored objective"
       }
     });
     await controller.create({
@@ -155,6 +163,26 @@ describe("InteractiveSessionController", () => {
     expect(runtimeMocks.create.mock.calls[2]?.[0]).not.toHaveProperty("sessionFile");
     expect(temporary.appendCustomEntry).not.toHaveBeenCalled();
     expect(opened.appendCustomEntry).not.toHaveBeenCalled();
+    expect(temporary.runtime.conversationObjective).toBe(INTERACTIVE_TASK_OBJECTIVE);
+    expect(opened.runtime.conversationObjective).toBe("stored objective");
+    expect(pending.runtime.conversationObjective).toBe(INTERACTIVE_TASK_OBJECTIVE);
+  });
+
+  it("persists objective updates without changing the host task safety configuration", async () => {
+    const { controller } = await controllerFixture();
+    const fixture = runtimeFixture("objective.jsonl");
+    runtimeMocks.create.mockResolvedValue(fixture.runtime as unknown as PiRuntime);
+    const runtime = await controller.create({ type: "new" });
+
+    await controller.updateObjective(runtime, "target session objective");
+
+    expect(runtime.conversationObjective).toBe("target session objective");
+    expect(fixture.appendCustomEntry).toHaveBeenLastCalledWith("pi-tui-session", expect.objectContaining({
+      objective: "target session objective"
+    }));
+    expect(await controller.list()).toEqual([
+      expect.objectContaining({ objective: "target session objective" })
+    ]);
   });
 
   it("disposes a runtime when session-scope initialization fails", async () => {

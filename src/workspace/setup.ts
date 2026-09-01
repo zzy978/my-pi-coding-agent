@@ -160,3 +160,16 @@ export async function prepareReadyWorkspace(
     throw setupError;
   }
 }
+
+export function prepareReadyCurrentWorkspace(
+  sourcePath: string,
+  setupPreference: SetupPreference,
+  onSetupCommand?: (command: string, index: number, total: number) => void
+): Promise<ReadyWorkspace> {
+  return prepareReadyWorkspace(
+    sourcePath,
+    { inPlace: true },
+    setupPreference,
+    onSetupCommand
+  );
+}

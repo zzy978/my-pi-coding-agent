@@ -116,15 +116,38 @@ describe("WorkspaceSessionStore", () => {
     await store.record({
       id: "66666666-6666-4666-8666-666666666666",
       path: join(store.sessionDirectory, "pending.jsonl"),
-      cwd: join(root, "worktree")
+      cwd: join(root, "worktree"),
+      objective: "pending objective"
     });
 
     expect(await store.list()).toEqual([
       expect.objectContaining({
         id: "66666666-6666-4666-8666-666666666666",
         materialized: false,
-        messageCount: 0
+        messageCount: 0,
+        objective: "pending objective"
       })
+    ]);
+  });
+
+  it("merges the latest recorded objective into a materialized session", async () => {
+    const root = await fixtureRoot();
+    const source = join(root, "source");
+    await mkdir(source);
+    const store = await WorkspaceSessionStore.create(source, join(root, "data"));
+    const id = "99999999-9999-4999-8999-999999999999";
+    const sessionPath = join(store.sessionDirectory, `${id}.jsonl`);
+    await writeSession(store.sessionDirectory, {
+      id,
+      cwd: source,
+      timestamp: "2026-08-31T10:00:00.000Z",
+      message: "target history"
+    });
+    await store.record({ id, path: sessionPath, cwd: source, objective: "first objective" });
+    await store.record({ id, path: sessionPath, cwd: source, objective: "latest objective" });
+
+    expect(await store.list()).toEqual([
+      expect.objectContaining({ id, materialized: true, objective: "latest objective" })
     ]);
   });
 
