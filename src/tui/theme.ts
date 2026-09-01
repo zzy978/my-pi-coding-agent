@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
 
-const selectListTheme: SelectListTheme = {
+export const selectListTheme: SelectListTheme = {
   selectedPrefix: (text) => chalk.cyan(text),
   selectedText: (text) => chalk.cyan.bold(text),
   description: (text) => chalk.dim(text),

@@ -17,6 +17,9 @@ export interface PiRuntimeOptions {
   continueSession: boolean;
   noSession: boolean;
   allowShell: boolean;
+  sessionDirectory?: string;
+  sessionFile?: string;
+  sessionId?: string;
   requestedModel?: { provider: string; id: string };
   thinkingLevel?: AgentSession["thinkingLevel"];
 }
@@ -56,9 +59,11 @@ export class PiRuntime {
     });
     const sessionManager = options.noSession
       ? SessionManager.inMemory(options.workspace)
-      : options.continueSession
-        ? SessionManager.continueRecent(options.workspace)
-        : SessionManager.create(options.workspace);
+      : options.sessionFile
+        ? SessionManager.open(options.sessionFile, options.sessionDirectory, options.workspace)
+        : options.continueSession
+          ? SessionManager.continueRecent(options.workspace, options.sessionDirectory)
+          : SessionManager.create(options.workspace, options.sessionDirectory, options.sessionId ? { id: options.sessionId } : undefined);
     const availableModels = services.modelRuntime.getAvailableSnapshot();
     const requestedModel = options.requestedModel
       ? availableModels.find((model) => model.provider === options.requestedModel?.provider && model.id === options.requestedModel.id)
@@ -100,6 +105,20 @@ export class PiRuntime {
   }
 
   dispose(): void {
-    this.session.dispose();
+    if (this.disposed) return;
+    this.disposed = true;
+    try {
+      this.session.dispose();
+    } finally {
+      for (const handler of this.disposeHandlers.splice(0)) handler();
+    }
+  }
+
+  private disposed = false;
+  private readonly disposeHandlers: Array<() => void> = [];
+
+  onDispose(handler: () => void): void {
+    if (this.disposed) handler();
+    else this.disposeHandlers.push(handler);
   }
 }

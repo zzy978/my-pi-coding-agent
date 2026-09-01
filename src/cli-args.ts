@@ -141,9 +141,6 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
 
   if (task && taskFile) throw new CliUsageError("Use either --task or --task-file, not both");
   if (continueSession && noSession) throw new CliUsageError("--continue cannot be combined with --no-session");
-  if (continueSession && !inPlace) {
-    throw new CliUsageError("--continue currently requires --in-place because managed worktrees use a new path on each run");
-  }
   if (positionalWorkspace && workspace !== cwd) {
     throw new CliUsageError("Use either a positional workspace or --cwd, not both");
   }

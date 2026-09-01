@@ -11,6 +11,7 @@ import { executeControlledRun } from "./evaluation/runner.js";
 import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
 import { assertRecordableCommands } from "./evaluation/redaction.js";
+import { InteractiveSessionController } from "./runtime/interactive-sessions.js";
 
 export function helpText(): string {
   return `${APP_NAME} ${APP_VERSION}
@@ -26,7 +27,7 @@ Options:
       --setup <command>   Replace automatic worktree setup (repeatable)
       --no-setup          Disable automatic worktree setup
       --allow <glob>       Add an allowed changed-path glob (repeatable)
-  -c, --continue          Continue the latest session for the effective workspace
+  -c, --continue          Continue the latest session for the source workspace
       --no-session        Do not persist the Pi session
       --in-place          Work in the source checkout instead of a managed worktree
       --unsafe-shell      Enable the unrestricted shell tool (not constrained by allowedPaths)
@@ -216,23 +217,22 @@ export async function run(options: CliOptions): Promise<number> {
   );
   const { workspace } = ready;
   let runtime: PiRuntime;
+  let sessionController: InteractiveSessionController;
   try {
-    runtime = await PiRuntime.create({
+    sessionController = await InteractiveSessionController.create({
       workspace: workspace.workspace,
+      sourceRoot: workspace.sourceRoot,
       getTask: () => task,
-      continueSession: options.continueSession,
-      noSession: options.noSession,
       allowShell: options.unsafeShell
     });
+    runtime = options.noSession
+      ? await sessionController.create({ type: "temporary" })
+      : options.continueSession
+        ? await sessionController.continueRecentOrCreate()
+        : await sessionController.create({ type: "new" });
   } catch (error) {
     await discardManagedWorkspace(workspace);
     throw error;
-  }
-  if (!runtime.hasAvailableModel) {
-    runtime.dispose();
-    await discardManagedWorkspace(workspace);
-    console.error("No configured Pi model. Run `pi`, use `/login`, then retry or run with --doctor.");
-    return 1;
   }
 
   try {
@@ -240,6 +240,7 @@ export async function run(options: CliOptions): Promise<number> {
       runtime,
       task,
       workspace,
+      sessionController,
       ...(options.task || options.taskFile ? { initialPrompt: task.objective } : {})
     });
     app.start();

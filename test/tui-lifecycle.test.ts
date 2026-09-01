@@ -4,7 +4,12 @@ import { parseTaskSpec } from "../src/task/task-spec.js";
 
 const tuiState = vi.hoisted(() => ({
   inputListeners: [] as Array<(data: string) => { consume: boolean } | undefined>,
-  latestEditor: undefined as { disableSubmit: boolean; onSubmit: ((value: string) => void) | undefined } | undefined
+  latestEditor: undefined as { disableSubmit: boolean; onSubmit: ((value: string) => void) | undefined } | undefined,
+  latestSelectList: undefined as {
+    items: Array<{ value: string; label: string }>;
+    onSelect: ((item: { value: string; label: string }) => void) | undefined;
+    onCancel: (() => void) | undefined;
+  } | undefined
 }));
 
 const verificationMocks = vi.hoisted(() => ({
@@ -35,6 +40,7 @@ vi.mock("@earendil-works/pi-tui", () => {
       tuiState.inputListeners.push(listener);
     }
     requestRender(): void {}
+    showOverlay(): { hide: () => void } { return { hide: () => undefined }; }
     start(): void {}
     stop(): void {}
   }
@@ -46,6 +52,15 @@ vi.mock("@earendil-works/pi-tui", () => {
     Markdown: MarkdownComponent,
     matchesKey: (data: string, key: string) => data === key,
     ProcessTerminal: class {},
+    SelectList: class {
+      onSelect: ((item: { value: string; label: string }) => void) | undefined;
+      onCancel: (() => void) | undefined;
+      constructor(public items: Array<{ value: string; label: string }>) { tuiState.latestSelectList = this; }
+      handleInput(): void {}
+      invalidate(): void {}
+      render(): string[] { return []; }
+      setSelectedIndex(): void {}
+    },
     Spacer: class {},
     Text: TextComponent,
     TuiMainScreen: MainScreen
@@ -66,6 +81,7 @@ describe("TUI turn lifecycle", () => {
     vi.useFakeTimers();
     tuiState.inputListeners.length = 0;
     tuiState.latestEditor = undefined;
+    tuiState.latestSelectList = undefined;
     verificationMocks.runVerification.mockReset();
   });
 
@@ -188,5 +204,188 @@ describe("TUI turn lifecycle", () => {
     await app.shutdown();
     await vi.runAllTimersAsync();
     expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/new", { type: "new" }],
+    ["/temp", { type: "temporary" }]
+  ] as const)("replaces the active runtime for %s and shuts down only the replacement", async (command, target) => {
+    const oldAbort = vi.fn(() => Promise.resolve());
+    const oldDispose = vi.fn();
+    const oldRuntime = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        state: { messages: [] },
+        sessionId: "old-session",
+        sessionFile: "old.jsonl",
+        getSessionStats: () => ({ sessionId: "old-session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort: oldAbort,
+      dispose: oldDispose
+    } as unknown as PiRuntime;
+    const replacementAbort = vi.fn(() => Promise.resolve());
+    const replacementDispose = vi.fn();
+    const replacement = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        state: { messages: [] },
+        sessionId: "replacement-session",
+        sessionFile: target.type === "new" ? "replacement.jsonl" : undefined,
+        getSessionStats: () => ({ sessionId: "replacement-session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort: replacementAbort,
+      dispose: replacementDispose
+    } as unknown as PiRuntime;
+    const sessionController = {
+      list: vi.fn(() => Promise.resolve([])),
+      create: vi.fn(() => Promise.resolve(replacement)),
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement))
+    };
+    const { CodingAgentTui } = await import("../src/tui/app.js");
+    const app = new CodingAgentTui({
+      runtime: oldRuntime,
+      sessionController,
+      task: parseTaskSpec({ id: "switch", objective: "switch sessions" }),
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
+    });
+
+    app.start();
+    tuiState.latestEditor?.onSubmit?.(command);
+    await vi.waitFor(() => expect(oldDispose).toHaveBeenCalledOnce());
+    expect(sessionController.create).toHaveBeenCalledWith(target, {
+      model: { provider: "test", id: "model" },
+      thinkingLevel: "medium"
+    });
+
+    await app.shutdown();
+    expect(oldAbort).not.toHaveBeenCalled();
+    expect(oldDispose).toHaveBeenCalledOnce();
+    expect(replacementAbort).toHaveBeenCalledOnce();
+    expect(replacementDispose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the current runtime usable when replacement creation fails", async () => {
+    const abort = vi.fn(() => Promise.resolve());
+    const dispose = vi.fn();
+    const runtime = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        state: { messages: [] },
+        sessionId: "current-session",
+        sessionFile: "current.jsonl",
+        getSessionStats: () => ({ sessionId: "current-session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort,
+      dispose
+    } as unknown as PiRuntime;
+    const sessionController = {
+      list: vi.fn(() => Promise.resolve([])),
+      create: vi.fn(() => Promise.reject(new Error("replacement failed"))),
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(runtime))
+    };
+    const { CodingAgentTui } = await import("../src/tui/app.js");
+    const app = new CodingAgentTui({
+      runtime,
+      sessionController,
+      task: parseTaskSpec({ id: "failure", objective: "keep current" }),
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
+    });
+
+    app.start();
+    tuiState.latestEditor?.onSubmit?.("/new");
+    await vi.waitFor(() => expect(sessionController.create).toHaveBeenCalledOnce());
+    expect(dispose).not.toHaveBeenCalled();
+    expect(tuiState.latestEditor?.disableSubmit).toBe(false);
+
+    await app.shutdown();
+    expect(abort).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("opens /sessions and switches to the selected persistent session", async () => {
+    const oldDispose = vi.fn();
+    const oldRuntime = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        state: { messages: [] },
+        sessionId: "old-session",
+        sessionFile: "old.jsonl",
+        getSessionStats: () => ({ sessionId: "old-session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort: vi.fn(() => Promise.resolve()),
+      dispose: oldDispose
+    } as unknown as PiRuntime;
+    const replacementDispose = vi.fn();
+    const replacement = {
+      diagnostics: [],
+      modelFallbackMessage: undefined,
+      session: {
+        model: { provider: "test", id: "model" },
+        thinkingLevel: "medium",
+        state: { messages: [] },
+        sessionId: "selected-session",
+        sessionFile: "selected.jsonl",
+        getSessionStats: () => ({ sessionId: "selected-session", tokens: { total: 0 }, cost: 0 })
+      },
+      subscribe: () => () => undefined,
+      prompt: vi.fn(() => Promise.resolve()),
+      abort: vi.fn(() => Promise.resolve()),
+      dispose: replacementDispose
+    } as unknown as PiRuntime;
+    const selectedSession = {
+      id: "selected-session",
+      path: "selected.jsonl",
+      cwd: process.cwd(),
+      created: new Date("2026-08-30T00:00:00.000Z"),
+      modified: new Date("2026-08-31T00:00:00.000Z"),
+      messageCount: 2,
+      firstMessage: "selected task",
+      allMessagesText: "selected task",
+      materialized: true
+    };
+    const sessionController = {
+      list: vi.fn(() => Promise.resolve([selectedSession])),
+      create: vi.fn(() => Promise.resolve(replacement)),
+      continueRecentOrCreate: vi.fn(() => Promise.resolve(replacement))
+    };
+    const { CodingAgentTui } = await import("../src/tui/app.js");
+    const app = new CodingAgentTui({
+      runtime: oldRuntime,
+      sessionController,
+      task: parseTaskSpec({ id: "picker", objective: "select session" }),
+      workspace: { sourceRoot: process.cwd(), workspace: process.cwd(), branch: "main", managedWorktree: false, baselineCommit: "0".repeat(40) }
+    });
+
+    app.start();
+    tuiState.latestEditor?.onSubmit?.("/sessions");
+    await vi.waitFor(() => expect(tuiState.latestSelectList).toBeDefined());
+    const selectedItem = tuiState.latestSelectList?.items[0];
+    if (!selectedItem) throw new Error("Session picker did not expose an item");
+    tuiState.latestSelectList?.onSelect?.(selectedItem);
+
+    await vi.waitFor(() => expect(oldDispose).toHaveBeenCalledOnce());
+    expect(sessionController.create).toHaveBeenCalledWith({ type: "open", session: selectedSession }, undefined);
+    await app.shutdown();
+    expect(replacementDispose).toHaveBeenCalledOnce();
   });
 });

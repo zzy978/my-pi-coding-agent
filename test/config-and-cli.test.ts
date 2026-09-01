@@ -48,11 +48,17 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("allows continuing a workspace session in a managed worktree", () => {
+    expect(parseCliArgs(["repo", "--continue"], resolve("fixture-root"))).toMatchObject({
+      continueSession: true,
+      inPlace: false
+    });
+  });
+
   it.each([
     [["--task"], "--task requires a value"],
     [["--task", "one", "--task-file", "task.yaml"], "Use either"],
     [["--continue", "--no-session", "--in-place"], "cannot be combined"],
-    [["--continue"], "requires --in-place"],
     [["--unknown"], "Unknown option"],
     [["--record"], "requires --task"],
     [["--setup", "npm ci", "--no-setup"], "cannot be combined"],

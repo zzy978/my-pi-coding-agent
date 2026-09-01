@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { PiRuntime } from "../runtime/pi-runtime.js";
+import type { InteractiveSessionTarget, TuiSessionController } from "../runtime/interactive-sessions.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import { formatTaskPrompt } from "../task/task-spec.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
@@ -23,11 +24,13 @@ import { writeRunReport } from "../report/report.js";
 import { COMMAND_HELP, parseTuiCommand, type TuiCommand } from "./commands.js";
 import { messageText, toolResultText, userFacingMessageText } from "./message-format.js";
 import { editorTheme, markdownTheme } from "./theme.js";
+import { SessionPicker } from "./session-picker.js";
 
 interface TuiAppOptions {
   runtime: PiRuntime;
   task: TaskSpec;
   workspace: WorkspaceInfo;
+  sessionController?: TuiSessionController;
   initialPrompt?: string;
 }
 
@@ -48,8 +51,10 @@ export class CodingAgentTui {
   private activeTurnId: number | undefined;
   private activePhase: "prompt" | "verification" | undefined;
   private readonly abortedTurns = new Set<number>();
+  private runtime: PiRuntime;
 
   constructor(private readonly options: TuiAppOptions) {
+    this.runtime = options.runtime;
     const terminal = new ProcessTerminal();
     this.tui = new TuiMainScreen(terminal);
     this.header = new Text(this.headerText(), 1, 1);
@@ -59,6 +64,9 @@ export class CodingAgentTui {
       { name: "allow", description: "Add an allowed path glob" },
       { name: "verify-add", description: "Add a verification command" },
       { name: "run", description: "Run the current objective" },
+      { name: "new", description: "New session" },
+      { name: "temp", description: "Temporary session" },
+      { name: "sessions", description: "Switch session" },
       { name: "verify", description: "Run verification commands" },
       { name: "diff", description: "Show Git changes" },
       { name: "status", description: "Show runtime status" },
@@ -94,12 +102,12 @@ export class CodingAgentTui {
 
   start(): void {
     this.renderRestoredMessages();
-    this.unsubscribe = this.options.runtime.subscribe((event) => this.handleEvent(event));
-    for (const diagnostic of this.options.runtime.diagnostics) {
+    this.unsubscribe = this.runtime.subscribe((event) => this.handleEvent(event));
+    for (const diagnostic of this.runtime.diagnostics) {
       this.addPlain(`${diagnostic.type.toUpperCase()}: ${diagnostic.message}`, diagnostic.type === "error" ? "error" : "info");
     }
-    if (this.options.runtime.modelFallbackMessage) {
-      this.addPlain(`Model notice: ${this.options.runtime.modelFallbackMessage}`, "warning");
+    if (this.runtime.modelFallbackMessage) {
+      this.addPlain(`Model notice: ${this.runtime.modelFallbackMessage}`, "warning");
     }
     this.addPlain(`Workspace: ${this.options.workspace.workspace}\nBranch: ${this.options.workspace.branch}`, "info");
     this.tui.start();
@@ -114,14 +122,14 @@ export class CodingAgentTui {
   }
 
   private headerText(): string {
-    const model = this.options.runtime.session.model;
+    const model = this.runtime.session.model;
     const modelText = model ? `${model.provider}/${model.id}` : "no model";
     const isolation = this.options.workspace.managedWorktree ? "managed worktree" : "in-place";
     return chalk.bold.cyan("PI TUI CODING AGENT") + `  ${modelText}  •  ${isolation}  •  ${this.options.workspace.branch}`;
   }
 
   private renderRestoredMessages(): void {
-    const messages = this.options.runtime.session.state.messages.slice(-40);
+    const messages = this.runtime.session.state.messages.slice(-40);
     if (!messages.length) return;
     this.addPlain(`Restored ${messages.length} recent session message(s).`, "info");
     for (const message of messages) {
@@ -213,6 +221,9 @@ export class CodingAgentTui {
         this.tui.requestRender();
         break;
       case "run": await this.runPrompt(this.options.task.objective); break;
+      case "new": await this.replaceSession({ type: "new" }, "Started new persistent session"); break;
+      case "temp": await this.replaceSession({ type: "temporary" }, "Started temporary session"); break;
+      case "sessions": await this.showSessions(command.value); break;
       case "task":
         if (!command.value) this.addPlain("Usage: /task <objective>", "warning");
         else {
@@ -238,6 +249,120 @@ export class CodingAgentTui {
     }
   }
 
+  private async showSessions(sessionId: string): Promise<void> {
+    if (this.busy) {
+      this.addPlain("A turn or verification is already running.", "warning");
+      return;
+    }
+    const controller = this.options.sessionController;
+    if (!controller) {
+      this.addPlain("Session switching is not available in this run.", "warning");
+      return;
+    }
+    this.setBusy(true);
+    let sessions;
+    try {
+      sessions = await controller.list();
+    } finally {
+      this.setBusy(false);
+    }
+    if (!sessions.length) {
+      this.addPlain("No persistent sessions are available for this workspace.", "info");
+      return;
+    }
+    if (sessionId) {
+      const exact = sessions.find((session) => session.id === sessionId);
+      const matches = exact ? [exact] : sessions.filter((session) => session.id.startsWith(sessionId));
+      if (matches.length === 0) {
+        this.addPlain(`No session matches ${sessionId}.`, "warning");
+        return;
+      }
+      if (matches.length > 1) {
+        this.addPlain(`Session ID prefix ${sessionId} is ambiguous.`, "warning");
+        return;
+      }
+      const selected = matches[0];
+      if (selected) await this.switchToStoredSession(selected);
+      return;
+    }
+    const picker = new SessionPicker(sessions, this.runtime.session.sessionId);
+    const overlay = this.tui.showOverlay(picker, { anchor: "center", width: "90%" });
+    picker.onCancel = () => {
+      overlay.hide();
+      this.tui.setFocus(this.editor);
+    };
+    picker.onSelect = (session) => {
+      overlay.hide();
+      this.tui.setFocus(this.editor);
+      void this.switchToStoredSession(session).catch((error: unknown) => this.showError(error));
+    };
+  }
+
+  private async switchToStoredSession(session: Awaited<ReturnType<TuiSessionController["list"]>>[number]): Promise<void> {
+    if (session.id === this.runtime.session.sessionId) {
+      this.addPlain(`Session ${session.id} is already active.`, "info");
+      return;
+    }
+    await this.replaceSession({ type: "open", session }, `Switched to session ${session.id}`);
+    if (session.cwd && session.cwd !== this.options.workspace.workspace) {
+      this.addPlain(
+        "Conversation context was restored into the current workspace; files and branch state were not restored from the previous workspace.",
+        "warning"
+      );
+    }
+  }
+
+  private async replaceSession(target: InteractiveSessionTarget, notice: string): Promise<void> {
+    if (this.busy) {
+      this.addPlain("A turn or verification is already running.", "warning");
+      return;
+    }
+    const controller = this.options.sessionController;
+    if (!controller) {
+      this.addPlain("Session switching is not available in this run.", "warning");
+      return;
+    }
+    const currentModel = this.runtime.session.model;
+    const preferences = target.type === "open" ? undefined : {
+      ...(currentModel ? { model: { provider: currentModel.provider, id: currentModel.id } } : {}),
+      thinkingLevel: this.runtime.session.thinkingLevel
+    };
+    this.setBusy(true);
+    let replacement: PiRuntime;
+    try {
+      replacement = await controller.create(target, preferences);
+    } catch (error) {
+      this.setBusy(false);
+      throw error;
+    }
+    let replacementSubscription: () => void;
+    try {
+      replacementSubscription = replacement.subscribe((event) => this.handleEvent(event));
+    } catch (error) {
+      replacement.dispose();
+      this.setBusy(false);
+      throw error;
+    }
+    const previous = this.runtime;
+    this.unsubscribe?.();
+    this.runtime = replacement;
+    this.unsubscribe = replacementSubscription;
+    previous.dispose();
+    this.resetTranscript();
+    this.header.setText(this.headerText());
+    this.addPlain(`${notice}: ${this.runtime.session.sessionId}`, "info");
+    this.renderRestoredMessages();
+    this.setBusy(false);
+  }
+
+  private resetTranscript(): void {
+    this.transcript.children.splice(0, this.transcript.children.length);
+    this.toolComponents.clear();
+    this.assistantComponent = undefined;
+    this.assistantText = "";
+    this.tui.requestRender();
+  }
+
   private async runPrompt(instruction: string): Promise<void> {
     if (this.shuttingDown) return;
     if (this.busy) {
@@ -251,7 +376,7 @@ export class CodingAgentTui {
     this.activePhase = "prompt";
     this.setBusy(true);
     try {
-      await this.options.runtime.prompt(formatTaskPrompt(this.options.task, instruction));
+      await this.runtime.prompt(formatTaskPrompt(this.options.task, instruction));
       if (this.shuttingDown || this.abortedTurns.has(turnId) || this.activeTurnId !== turnId) return;
       this.activePhase = "verification";
       await this.verifyAndReport(true);
@@ -279,14 +404,14 @@ export class CodingAgentTui {
       );
       const summary = formatVerificationSummary(report);
       this.addPlain(summary, report.success ? "success" : "warning");
-      const model = this.options.runtime.session.model;
+      const model = this.runtime.session.model;
       const paths = await writeRunReport({
         version: 1,
         createdAt: new Date().toISOString(),
         task: this.options.task,
         workspace: this.options.workspace,
-        sessionId: this.options.runtime.session.sessionId,
-        ...(this.options.runtime.session.sessionFile ? { sessionFile: this.options.runtime.session.sessionFile } : {}),
+        sessionId: this.runtime.session.sessionId,
+        ...(this.runtime.session.sessionFile ? { sessionFile: this.runtime.session.sessionFile } : {}),
         ...(model ? { model: { provider: model.provider, id: model.id } } : {}),
         verification: report
       });
@@ -302,8 +427,8 @@ export class CodingAgentTui {
   }
 
   private showStatus(): void {
-    const stats = this.options.runtime.session.getSessionStats();
-    const model = this.options.runtime.session.model;
+    const stats = this.runtime.session.getSessionStats();
+    const model = this.runtime.session.model;
     this.addPlain([
       `Task: ${this.options.task.objective}`,
       `Allowed: ${this.options.task.allowedPaths.join(", ")}`,
@@ -312,6 +437,7 @@ export class CodingAgentTui {
       `Branch: ${this.options.workspace.branch}`,
       `Model: ${model ? `${model.provider}/${model.id}` : "not configured"}`,
       `Session: ${stats.sessionId}`,
+      `Session mode: ${this.runtime.session.sessionFile ? "persistent" : "temporary"}`,
       `Tokens: ${stats.tokens.total}`,
       `Cost: $${stats.cost.toFixed(4)}`
     ].join("\n"), "info");
@@ -328,7 +454,7 @@ export class CodingAgentTui {
     }
     this.abortedTurns.add(this.activeTurnId);
     this.setStatus("Aborting…");
-    await this.options.runtime.abort();
+    await this.runtime.abort();
     this.addPlain("Active turn aborted.", "warning");
   }
 
@@ -373,10 +499,10 @@ export class CodingAgentTui {
     if (this.activeTurnId !== undefined) this.abortedTurns.add(this.activeTurnId);
     this.editor.disableSubmit = true;
     try {
-      await this.options.runtime.abort();
+      await this.runtime.abort();
     } finally {
       this.unsubscribe?.();
-      this.options.runtime.dispose();
+      this.runtime.dispose();
       this.tui.stop();
     }
   }

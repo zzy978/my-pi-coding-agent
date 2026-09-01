@@ -7,6 +7,9 @@ export type TuiCommand =
   | { type: "status" }
   | { type: "clear" }
   | { type: "run" }
+  | { type: "new" }
+  | { type: "temp" }
+  | { type: "sessions"; value: string }
   | { type: "task"; value: string }
   | { type: "allow"; value: string }
   | { type: "verify-add"; value: string }
@@ -28,6 +31,9 @@ export function parseTuiCommand(input: string): TuiCommand | null {
     case "status": return { type: "status" };
     case "clear": return { type: "clear" };
     case "run": return { type: "run" };
+    case "new": return { type: "new" };
+    case "temp": return { type: "temp" };
+    case "sessions": return { type: "sessions", value };
     case "task": return { type: "task", value };
     case "allow": return { type: "allow", value };
     case "verify-add": return { type: "verify-add", value };
@@ -40,6 +46,9 @@ export const COMMAND_HELP = `Commands:
 /allow <glob>           Add an allowed changed-path glob
 /verify-add <command>   Add a verification command
 /run                    Run the current task objective
+/new                    New session
+/temp                   Temporary session
+/sessions [session-id]  Switch session
 /verify                 Run verifiers without prompting the model
 /diff                   Show changed files and diff statistics
 /status                 Show task, model, session, and workspace state
