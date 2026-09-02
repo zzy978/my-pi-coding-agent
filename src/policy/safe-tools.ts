@@ -18,7 +18,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { checkCommand } from "./command-policy.js";
 import { assertReadablePath, assertWritablePath, relativePathWithin } from "./path-policy.js";
-import type { ShellApprovalHandler } from "./shell-approval.js";
+
+interface ShellApprovalRequest {
+  command: string;
+  reason: string;
+}
+
+type ShellApprovalHandler = (request: ShellApprovalRequest) => Promise<boolean>;
 
 export async function assertFilesystemContained(workspace: string, targetPath: string): Promise<string> {
   const realWorkspace = await realpath(workspace);

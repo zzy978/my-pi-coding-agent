@@ -162,7 +162,7 @@ describe("workspace setup", () => {
       { mode: "explicit", commands: [{ command: "npm run missing-setup-script", timeoutMs: 10_000 }] }
     )).rejects.toThrow("exited with code 1");
 
-    const worktreeRoot = join(dataDirectory, "worktrees");
+    const worktreeRoot = join(dataDirectory, "worktree");
     const entries = await access(worktreeRoot).then(async () => {
       const { readdir } = await import("node:fs/promises");
       return readdir(worktreeRoot);

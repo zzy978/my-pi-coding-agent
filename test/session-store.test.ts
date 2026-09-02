@@ -1,12 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkspaceSessionStore } from "../src/runtime/session-store.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, {
     recursive: true,
     force: true,
@@ -148,6 +150,34 @@ describe("WorkspaceSessionStore", () => {
 
     expect(await store.list()).toEqual([
       expect.objectContaining({ id, materialized: true, objective: "latest objective" })
+    ]);
+  });
+
+  it("imports legacy Pi sessions before exposing them to the runtime", async () => {
+    const root = await fixtureRoot();
+    const source = join(root, "source");
+    const legacyAgentDirectory = join(root, "agent");
+    const safePath = `--${resolve(source).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+    const legacyDirectory = join(legacyAgentDirectory, "sessions", safePath);
+    vi.stubEnv("PI_CODING_AGENT_DIR", legacyAgentDirectory);
+    await Promise.all([mkdir(source), mkdir(legacyDirectory, { recursive: true })]);
+    const id = "55555555-5555-4555-8555-555555555555";
+    await writeSession(legacyDirectory, {
+      id,
+      cwd: source,
+      timestamp: "2026-08-31T10:00:00.000Z",
+      message: "legacy task"
+    });
+    const store = await WorkspaceSessionStore.create(source, join(root, "data"));
+
+    const sessions = await store.list();
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        id,
+        path: join(store.sessionDirectory, `${id}.jsonl`),
+        materialized: true
+      })
     ]);
   });
 

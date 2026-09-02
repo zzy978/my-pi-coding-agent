@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+/.picoding/
 *.log
 .DS_Store
 Thumbs.db

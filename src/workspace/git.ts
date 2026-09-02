@@ -1,7 +1,7 @@
 import { basename, join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { getDataDirectory } from "../runtime/data-dir.js";
+import { getDataDirectories, getDataDirectory } from "../runtime/data-dir.js";
 import { runProcess } from "../runtime/process.js";
 
 export interface WorkspaceInfo {
@@ -98,7 +98,7 @@ export async function prepareWorkspace(sourcePath: string, options: {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = randomUUID().slice(0, 8);
   const branch = `${options.branchPrefix ?? "agent"}/${stamp}-${suffix}`;
-  const worktreeRoot = join(options.dataDirectory ?? getDataDirectory(), "worktrees");
+  const worktreeRoot = getDataDirectories(options.dataDirectory ?? getDataDirectory()).worktree;
   const workspace = join(worktreeRoot, `${slug}-${stamp}-${suffix}`);
   await mkdir(worktreeRoot, { recursive: true });
 

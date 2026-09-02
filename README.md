@@ -141,13 +141,21 @@ Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保
 
 ## 数据位置
 
-会话内容仍使用 Pi 的 JSONL 格式；本项目按源仓库路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。会话、受控运行使用的临时 worktree 和报告默认保存在：
+会话内容仍使用 Pi 的 JSONL 格式；本项目按源仓库路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。
 
-- Windows：`%LOCALAPPDATA%\pi-tui-coding-agent`
-- macOS：`~/Library/Application Support/pi-tui-coding-agent`
-- Linux：`$XDG_DATA_HOME/pi-tui-coding-agent`，未设置时为 `~/.local/share/pi-tui-coding-agent`
+所有应用运行期数据默认集中在项目根目录的 `.picoding/` 中：
 
-可用 `PI_TUI_AGENT_DATA_DIR` 改写该目录。
+```text
+.picoding/
+├── runs/       受控评测、回放及其证据
+├── worktree/   受控运行创建的 Git 工作树
+├── sessions/   按源仓库隔离的持久会话
+├── reports/    交互模式的验证报告
+├── temp/       `/temp` 使用并在关闭后清理的临时会话
+└── agent/      Pi 认证、模型设置和全局资源
+```
+
+在本仓库中默认根目录是 `D:\Agent\.picoding`。可用 `PI_TUI_AGENT_DATA_DIR` 改写整个数据根目录；各分类目录仍保持上述结构。`.picoding/` 已被 Git 忽略，其中的 `agent/auth.json` 可能包含凭据，不应提交或分享。
 
 ## 安全边界
 
@@ -168,7 +176,7 @@ npm run build
 
 - `src/runtime/pi-interactive.ts`：Pi 完整交互运行时与官方 TUI 装配。
 - `src/runtime/interactive-host-extension.ts`：TaskSpec、验证、报告和项目会话命令。
-- `src/runtime/pi-runtime.ts`：record/replay 使用的受控无界面运行时。
+- `src/runtime/controlled-pi-runtime.ts`：record/replay 使用的受控无界面运行时。
 - `src/policy/`：路径和命令护栏。
 - `src/workspace/git.ts`：当前检出目录解析，以及受控记录/回放使用的 worktree 生命周期。
 - `src/verifier/verifier.ts`：确定性验证。

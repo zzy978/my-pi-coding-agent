@@ -1,4 +1,4 @@
-import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { TaskSpec } from "../task/task-spec.js";
 import { checkCommand } from "./command-policy.js";
 import { isAllowedChangedPath, isSensitiveReadPath, relativePathWithin } from "./path-policy.js";
@@ -16,6 +16,21 @@ function deniedShellResult(message: string) {
   return { output: message, exitCode: 1, cancelled: false, truncated: false };
 }
 
+function visibleCommand(command: string, maximum = 1_200): string {
+  let visible = "";
+  for (const character of command) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    const unsafeControl = (codePoint <= 0x1f && codePoint !== 0x09 && codePoint !== 0x0a && codePoint !== 0x0d)
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || (codePoint >= 0x202a && codePoint <= 0x202e)
+      || (codePoint >= 0x2066 && codePoint <= 0x2069);
+    const rendered = unsafeControl ? `\\u${codePoint.toString(16).padStart(4, "0")}` : character;
+    if (visible.length + rendered.length > maximum) return `${visible.slice(0, maximum - 1)}…`;
+    visible += rendered;
+  }
+  return visible;
+}
+
 export function createPolicyExtension(
   workspace: string,
   getTask: () => TaskSpec,
@@ -26,6 +41,21 @@ export function createPolicyExtension(
     name: "host-policy",
     hidden: true,
     factory: (pi) => {
+      let approvalQueue: Promise<void> = Promise.resolve();
+      const requestShellApproval = (ctx: ExtensionContext, reason: string | undefined, command: string): Promise<boolean> => {
+        const decision = approvalQueue.then(async () => {
+          if (!ctx.hasUI) return false;
+          const choice = await ctx.ui.select(
+            `Approve destructive command?\n${reason ?? "This command may delete or discard data."}\n\n${visibleCommand(command)}`,
+            ["Deny", "Approve once"],
+            ctx.signal ? { signal: ctx.signal } : undefined
+          );
+          return choice === "Approve once";
+        });
+        approvalQueue = decision.then(() => undefined, () => undefined);
+        return decision;
+      };
+
       pi.on("before_agent_start", (event) => ({
         systemPrompt: event.systemPrompt + taskPolicyText(getTask())
       }));
@@ -68,10 +98,7 @@ export function createPolicyExtension(
             if (!ctx.hasUI) {
               return { block: true, reason: "Destructive Shell command requires interactive approval" };
             }
-            const approved = await ctx.ui.confirm(
-              "Approve destructive command?",
-              `${result.reason ?? "This command may delete or discard data."}\n\n${command}`
-            );
+            const approved = await requestShellApproval(ctx, result.reason, command);
             if (!approved) return { block: true, reason: "Destructive Shell command was denied" };
           }
         }
@@ -88,10 +115,7 @@ export function createPolicyExtension(
         if (!options.interactiveShellApproval || !ctx.hasUI) {
           return { result: deniedShellResult("Destructive Shell command requires interactive approval") };
         }
-        const approved = await ctx.ui.confirm(
-          "Approve destructive command?",
-          `${result.reason ?? "This command may delete or discard data."}\n\n${event.command}`
-        );
+        const approved = await requestShellApproval(ctx, result.reason, event.command);
         return approved ? undefined : { result: deniedShellResult("Destructive Shell command was denied") };
       });
     }

@@ -1,7 +1,7 @@
 import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { getDataDirectory } from "../runtime/data-dir.js";
+import { getDataDirectories, getDataDirectory } from "../runtime/data-dir.js";
 import {
   EvaluationArtifactError,
   parseRunManifest,
@@ -25,7 +25,7 @@ function assertRunId(runId: string): void {
 }
 
 export function runsDirectory(dataDirectory = getDataDirectory()): string {
-  return join(dataDirectory, "runs");
+  return getDataDirectories(dataDirectory).runs;
 }
 
 export function runDirectory(runId: string, dataDirectory = getDataDirectory()): string {

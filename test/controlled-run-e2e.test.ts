@@ -5,7 +5,7 @@ import type { AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-
 import { afterEach, describe, expect, it } from "vitest";
 import { executeControlledRun } from "../src/evaluation/runner.js";
 import { loadRunBundle } from "../src/evaluation/store.js";
-import type { PiRuntime } from "../src/runtime/pi-runtime.js";
+import type { ControlledPiRuntime } from "../src/runtime/controlled-pi-runtime.js";
 import { parseTaskSpec } from "../src/task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace } from "../src/workspace/git.js";
 import { initializeGitRepository } from "./helpers/git-repository.js";
@@ -18,7 +18,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 3 })));
 });
 
-function createFakeRuntime(workspace: string): PiRuntime {
+function createFakeRuntime(workspace: string): ControlledPiRuntime {
   const listeners = new Set<(event: AgentSessionEvent) => void>();
   let stats: SessionStats = {
     sessionFile: undefined,
@@ -35,8 +35,6 @@ function createFakeRuntime(workspace: string): PiRuntime {
     for (const listener of listeners) listener(event);
   };
   return {
-    diagnostics: [],
-    modelFallbackMessage: undefined,
     hasAvailableModel: true,
     contextFiles: [],
     session: {
@@ -45,34 +43,33 @@ function createFakeRuntime(workspace: string): PiRuntime {
       sessionId: stats.sessionId,
       sessionFile: undefined,
       getActiveToolNames: () => ["read", "edit", "write", "ls"],
-      getSessionStats: () => structuredClone(stats)
+      getSessionStats: () => structuredClone(stats),
+      subscribe: (listener: (event: AgentSessionEvent) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      prompt: async (text: string) => {
+        capturedPrompts.push(text);
+        emit({ type: "agent_start" } as AgentSessionEvent);
+        emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hidden" } } as AgentSessionEvent);
+        emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "write", args: { path: "result.txt", content: "done\nSECRET" } } as AgentSessionEvent);
+        await writeFile(join(workspace, "result.txt"), "done\n", "utf8");
+        emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "write", isError: false, result: { content: [{ type: "text", text: "done\nSECRET" }] } } as AgentSessionEvent);
+        emit({ type: "agent_settled" } as AgentSessionEvent);
+        stats = {
+          ...stats,
+          userMessages: 1,
+          assistantMessages: 1,
+          toolCalls: 1,
+          toolResults: 1,
+          totalMessages: 3,
+          tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
+          cost: 0.001
+        };
+      }
     },
-    subscribe: (listener: (event: AgentSessionEvent) => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    prompt: async (text: string) => {
-      capturedPrompts.push(text);
-      emit({ type: "agent_start" } as AgentSessionEvent);
-      emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hidden" } } as AgentSessionEvent);
-      emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "write", args: { path: "result.txt", content: "done\nSECRET" } } as AgentSessionEvent);
-      await writeFile(join(workspace, "result.txt"), "done\n", "utf8");
-      emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "write", isError: false, result: { content: [{ type: "text", text: "done\nSECRET" }] } } as AgentSessionEvent);
-      emit({ type: "agent_settled" } as AgentSessionEvent);
-      stats = {
-        ...stats,
-        userMessages: 1,
-        assistantMessages: 1,
-        toolCalls: 1,
-        toolResults: 1,
-        totalMessages: 3,
-        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
-        cost: 0.001
-      };
-    },
-    abort: () => Promise.resolve(),
     dispose: () => undefined
-  } as unknown as PiRuntime;
+  } as unknown as ControlledPiRuntime;
 }
 
 describe("controlled run and replay lifecycle", () => {

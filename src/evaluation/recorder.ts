@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-agent";
 import { APP_VERSION } from "../config.js";
-import type { PiRuntime } from "../runtime/pi-runtime.js";
+import type { ControlledPiRuntime } from "../runtime/controlled-pi-runtime.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import { PROMPT_POLICY_VERSION } from "../task/task-spec.js";
 import type { VerificationReport } from "../verifier/verifier.js";
@@ -34,7 +34,7 @@ interface RecorderOptions {
   replayOf?: string;
   task: TaskSpec;
   workspace: WorkspaceInfo;
-  runtime: PiRuntime;
+  runtime: ControlledPiRuntime;
   allowShell: boolean;
   noSession: boolean;
   setup: SetupPlan;
@@ -94,7 +94,7 @@ export class RunRecorder {
   private constructor(
     manifest: RunManifest,
     directory: string,
-    runtime: PiRuntime,
+    runtime: ControlledPiRuntime,
     workspace: WorkspaceInfo,
     dataDirectory: string | undefined
   ) {
@@ -226,7 +226,7 @@ export class RunRecorder {
   }
 
   async finalize(options: {
-    runtime: PiRuntime;
+    runtime: ControlledPiRuntime;
     verification?: VerificationReport;
     diffSummary: string;
     executionError?: unknown;

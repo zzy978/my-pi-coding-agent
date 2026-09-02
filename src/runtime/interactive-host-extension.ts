@@ -1,6 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   CURRENT_SESSION_VERSION,
   SessionManager,
@@ -15,7 +14,7 @@ import { formatVerificationSummary, runVerification } from "../verifier/verifier
 import type { WorkspaceInfo } from "../workspace/git.js";
 import { getDiff } from "../workspace/git.js";
 import { SessionPicker } from "../tui/session-picker.js";
-import type { WorkspaceSessionStore } from "./session-store.js";
+import { canonicalWorkspacePath, type WorkspaceSessionStore } from "./session-store.js";
 
 interface InteractiveHostExtensionOptions {
   task: TaskSpec;
@@ -23,13 +22,11 @@ interface InteractiveHostExtensionOptions {
   store: WorkspaceSessionStore;
   getRuntimeHost: () => AgentSessionRuntime;
   temporarySessionFiles: Set<string>;
+  pendingSessionObjectives: Map<string, string>;
   consumeInitialObjectiveOverride: () => string | undefined;
+  dataDirectory: string;
+  temporaryDirectory: string;
   releaseSessionLock?: () => void;
-}
-
-function canonicalPath(path: string): string {
-  const resolved = resolve(path);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function completed(): Promise<void> {
@@ -110,7 +107,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             ...(sessionFile ? { sessionFile } : {}),
             ...(ctx.model ? { model: { provider: ctx.model.provider, id: ctx.model.id } } : {}),
             verification
-          });
+          }, options.dataDirectory);
           ctx.ui.notify(
             `${formatVerificationSummary(verification)}\nReport: ${paths.markdownPath}`,
             verification.success ? "info" : "warning"
@@ -131,7 +128,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
         if (event.reason !== "resume" || !event.targetSessionFile) return undefined;
         try {
           const targetCwd = SessionManager.open(event.targetSessionFile).getCwd();
-          if (canonicalPath(targetCwd) !== canonicalPath(options.workspace.workspace)) {
+          if (canonicalWorkspacePath(targetCwd) !== canonicalWorkspacePath(options.workspace.workspace)) {
             ctx.ui.notify(
               "This application keeps tools and verification bound to the selected workspace. Open that session from its own repository.",
               "warning"
@@ -146,9 +143,13 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
 
       pi.on("session_start", async (event, ctx) => {
         const path = ctx.sessionManager.getSessionFile();
+        const sessionId = ctx.sessionManager.getSessionId();
+        const sessionOverride = options.pendingSessionObjectives.get(sessionId);
+        options.pendingSessionObjectives.delete(sessionId);
         const restored = storedObjective(ctx.sessionManager);
         const initialOverride = event.reason === "startup" ? options.consumeInitialObjectiveOverride() : undefined;
         if (initialOverride) options.task.objective = initialOverride;
+        else if (sessionOverride) options.task.objective = sessionOverride;
         else if (restored) options.task.objective = restored;
         else if (event.reason === "new" || event.reason === "resume") {
           options.task.objective = INTERACTIVE_TASK_OBJECTIVE;
@@ -295,20 +296,28 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             const pending = SessionManager.create(options.workspace.workspace, options.store.sessionDirectory, { id: choice.id });
             targetPath = await materializeEmptySession(pending);
           }
-          await options.getRuntimeHost().switchSession(targetPath, {
-            cwdOverride: options.workspace.workspace,
-            withSession: (replacement) => {
-              replacement.ui.notify(`Switched to session ${choice?.id}`, "info");
-              return completed();
-            }
-          });
+          if (choice.objective) options.pendingSessionObjectives.set(choice.id, choice.objective);
+          try {
+            const result = await options.getRuntimeHost().switchSession(targetPath, {
+              cwdOverride: options.workspace.workspace,
+              withSession: (replacement) => {
+                replacement.ui.notify(`Switched to session ${choice?.id}`, "info");
+                return completed();
+              }
+            });
+            if (result.cancelled) options.pendingSessionObjectives.delete(choice.id);
+          } catch (error) {
+            options.pendingSessionObjectives.delete(choice.id);
+            throw error;
+          }
         }
       });
 
       pi.registerCommand("temp", {
         description: "Start a temporary session removed when it closes",
         handler: async () => {
-          const directory = await mkdtemp(join(tmpdir(), "pi-tui-session-"));
+          await mkdir(options.temporaryDirectory, { recursive: true });
+          const directory = await mkdtemp(join(options.temporaryDirectory, "session-"));
           const temporary = SessionManager.create(options.workspace.workspace, directory);
           const path = await materializeEmptySession(temporary);
           options.temporarySessionFiles.add(path);

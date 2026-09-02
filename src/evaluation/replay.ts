@@ -1,4 +1,4 @@
-import type { PiRuntimeOptions } from "../runtime/pi-runtime.js";
+import type { ControlledPiRuntimeOptions } from "../runtime/controlled-pi-runtime.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import type { RunManifest } from "./schema.js";
 import type { SetupPreference } from "../workspace/setup.js";
@@ -10,7 +10,7 @@ export interface ReplayPlan {
   allowShell: boolean;
   noSession: boolean;
   requestedModel: { provider: string; id: string };
-  thinkingLevel: NonNullable<PiRuntimeOptions["thinkingLevel"]>;
+  thinkingLevel: NonNullable<ControlledPiRuntimeOptions["thinkingLevel"]>;
   tools: string[];
   setupPreference: SetupPreference;
 }
@@ -32,7 +32,7 @@ export function createReplayPlan(manifest: RunManifest, shellOverride?: boolean)
     allowShell: manifest.policy.allowShell,
     noSession: manifest.agent.sessionMode === "ephemeral",
     requestedModel: { ...manifest.agent.model },
-    thinkingLevel: manifest.agent.thinkingLevel as NonNullable<PiRuntimeOptions["thinkingLevel"]>,
+    thinkingLevel: manifest.agent.thinkingLevel as NonNullable<ControlledPiRuntimeOptions["thinkingLevel"]>,
     tools: [...manifest.policy.tools],
     setupPreference: manifest.setup
       ? {

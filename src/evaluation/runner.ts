@@ -1,4 +1,4 @@
-import type { PiRuntime } from "../runtime/pi-runtime.js";
+import type { ControlledPiRuntime } from "../runtime/controlled-pi-runtime.js";
 import { writeRunReport } from "../report/report.js";
 import { formatTaskPrompt, type TaskSpec } from "../task/task-spec.js";
 import { runVerification, type VerificationReport } from "../verifier/verifier.js";
@@ -12,7 +12,7 @@ import type { RunKind } from "./schema.js";
 interface ControlledRunOptions {
   kind: RunKind;
   replayOf?: string;
-  runtime: PiRuntime;
+  runtime: ControlledPiRuntime;
   task: TaskSpec;
   workspace: WorkspaceInfo;
   allowShell: boolean;
@@ -38,7 +38,7 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
     setup: options.setup,
     ...(options.dataDirectory ? { dataDirectory: options.dataDirectory } : {})
   });
-  const unsubscribe = options.runtime.subscribe((event) => recorder.recordAgentEvent(event));
+  const unsubscribe = options.runtime.session.subscribe((event) => recorder.recordAgentEvent(event));
   let verification: VerificationReport | undefined;
   let executionError: unknown;
   let setupFailed = false;
@@ -59,7 +59,7 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
       throw error;
     }
     options.onStatus?.(`Run ${recorder.manifest.runId}: agent`);
-    await options.runtime.prompt(formatTaskPrompt(options.task, options.task.objective));
+    await options.runtime.session.prompt(formatTaskPrompt(options.task, options.task.objective));
     recorder.record("verification_start", { commandCount: options.task.verify.length });
     options.onStatus?.(`Run ${recorder.manifest.runId}: verification`);
     verification = await runVerification(options.workspace.workspace, options.task, (command, index, total) => {

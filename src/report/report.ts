@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getDataDirectory } from "../runtime/data-dir.js";
+import { getDataDirectories, getDataDirectory } from "../runtime/data-dir.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import type { VerificationReport } from "../verifier/verifier.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
@@ -78,7 +78,7 @@ export async function writeRunReport(
   dataDirectory = getDataDirectory(),
   options?: { outputDirectory?: string; baseName?: string }
 ): Promise<{ jsonPath: string; markdownPath: string }> {
-  const reportDir = options?.outputDirectory ?? join(dataDirectory, "reports");
+  const reportDir = options?.outputDirectory ?? getDataDirectories(dataDirectory).reports;
   await mkdir(reportDir, { recursive: true });
   const timestamp = report.createdAt.replace(/[-:TZ.]/g, "");
   const base = options?.baseName ?? `${timestamp}-${safeName(report.task.id)}`;

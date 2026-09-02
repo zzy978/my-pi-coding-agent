@@ -3,6 +3,7 @@ import { createAgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { isSupportedNodeVersion, minimumNodeVersionText } from "./config.js";
 import { runProcess } from "./runtime/process.js";
 import { resolveGitRoot } from "./workspace/git.js";
+import { getDataDirectories } from "./runtime/data-dir.js";
 
 export interface DoctorCheck {
   name: string;
@@ -10,7 +11,10 @@ export interface DoctorCheck {
   detail: string;
 }
 
-export async function runDoctor(workspace: string): Promise<DoctorCheck[]> {
+export async function runDoctor(
+  workspace: string,
+  agentDirectory = getDataDirectories().agent
+): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   checks.push({
     name: "node",
@@ -43,6 +47,7 @@ export async function runDoctor(workspace: string): Promise<DoctorCheck[]> {
   try {
     const services = await createAgentSessionServices({
       cwd: workspace,
+      agentDir: agentDirectory,
       resourceLoaderOptions: {
         noExtensions: true,
         noSkills: true,
@@ -57,7 +62,7 @@ export async function runDoctor(workspace: string): Promise<DoctorCheck[]> {
       ok: available.length > 0,
       detail: available.length > 0
         ? `${available.length} configured model(s); default selection is resolved at session start`
-        : "No configured model. Run pi and use /login first."
+        : "No configured model. Start pi-agent-tui interactively and use /login first."
     });
     for (const diagnostic of services.diagnostics) {
       checks.push({ name: `pi-${diagnostic.type}`, ok: diagnostic.type !== "error", detail: diagnostic.message });

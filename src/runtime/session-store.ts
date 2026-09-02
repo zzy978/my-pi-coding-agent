@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
-import { getDataDirectory } from "./data-dir.js";
+import { closeSync, constants, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { getAgentDir, SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { getDataDirectories, getDataDirectory } from "./data-dir.js";
 
 interface WorkspaceSessionMetadata {
   version: 1;
@@ -30,13 +30,18 @@ export interface StoredSessionInfo extends SessionInfo {
   objective?: string;
 }
 
-function canonicalPath(path: string): string {
+export function canonicalWorkspacePath(path: string): string {
   const resolved = resolve(path);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function legacyPiSessionDirectory(sourceRoot: string): string {
+  const safePath = `--${resolve(sourceRoot).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(getAgentDir(), "sessions", safePath);
 }
 
 function isAlreadyExists(error: unknown): boolean {
@@ -71,15 +76,20 @@ export class WorkspaceSessionStore {
   private readonly metadataPath: string;
   private readonly recordsDirectory: string;
   private readonly locksDirectory: string;
+  private readonly legacySessionDirectory: string;
   private lastRecordTimestamp = 0;
 
   private constructor(sourceRoot: string, dataDirectory: string) {
     this.sourceRoot = resolve(sourceRoot);
-    this.workspaceDirectory = join(dataDirectory, "sessions", sha256(canonicalPath(this.sourceRoot)));
+    this.workspaceDirectory = join(
+      getDataDirectories(dataDirectory).sessions,
+      sha256(canonicalWorkspacePath(this.sourceRoot))
+    );
     this.sessionDirectory = join(this.workspaceDirectory, "files");
     this.metadataPath = join(this.workspaceDirectory, "workspace.json");
     this.recordsDirectory = join(this.workspaceDirectory, "records");
     this.locksDirectory = join(this.workspaceDirectory, "locks");
+    this.legacySessionDirectory = legacyPiSessionDirectory(this.sourceRoot);
   }
 
   static async create(sourceRoot: string, dataDirectory = getDataDirectory()): Promise<WorkspaceSessionStore> {
@@ -89,13 +99,13 @@ export class WorkspaceSessionStore {
   }
 
   async list(): Promise<StoredSessionInfo[]> {
-    const [managed, legacy, records] = await Promise.all([
+    await this.importLegacySessions();
+    const [managed, records] = await Promise.all([
       SessionManager.listAll(this.sessionDirectory),
-      SessionManager.list(this.sourceRoot),
       this.readRecords()
     ]);
     const byId = new Map<string, StoredSessionInfo>();
-    for (const session of [...managed, ...legacy]) {
+    for (const session of managed) {
       const candidate = { ...session, materialized: true };
       const existing = byId.get(session.id);
       if (!existing || session.modified > existing.modified) byId.set(session.id, candidate);
@@ -217,7 +227,7 @@ export class WorkspaceSessionStore {
     }
     const existing = JSON.parse(await readFile(this.metadataPath, "utf8")) as Partial<WorkspaceSessionMetadata>;
     if (existing.version !== 1 || typeof existing.sourceRoot !== "string"
-      || canonicalPath(existing.sourceRoot) !== canonicalPath(this.sourceRoot)) {
+      || canonicalWorkspacePath(existing.sourceRoot) !== canonicalWorkspacePath(this.sourceRoot)) {
       throw new Error(`Session workspace metadata does not match ${this.sourceRoot}`);
     }
   }
@@ -242,5 +252,19 @@ export class WorkspaceSessionStore {
       }
     }));
     return records.filter((record): record is SessionRecord => record !== undefined);
+  }
+
+  private async importLegacySessions(): Promise<void> {
+    if (!existsSync(this.legacySessionDirectory)) return;
+    const legacy = await SessionManager.list(this.sourceRoot, this.legacySessionDirectory);
+    await Promise.all(legacy.map(async (session) => {
+      const target = join(this.sessionDirectory, basename(session.path));
+      if (canonicalWorkspacePath(session.path) === canonicalWorkspacePath(target)) return;
+      try {
+        await copyFile(session.path, target, constants.COPYFILE_EXCL);
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+      }
+    }));
   }
 }
