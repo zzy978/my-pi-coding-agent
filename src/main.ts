@@ -5,13 +5,12 @@ import { loadTaskSpec, createInteractiveTask } from "./task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace } from "./workspace/git.js";
 import { prepareReadyCurrentWorkspace, resolveSetupPlan, setupPreferenceFromCli } from "./workspace/setup.js";
 import { PiRuntime } from "./runtime/pi-runtime.js";
-import { CodingAgentTui } from "./tui/app.js";
+import { runPiInteractive } from "./runtime/pi-interactive.js";
 import { runDoctor } from "./doctor.js";
 import { executeControlledRun } from "./evaluation/runner.js";
 import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
 import { assertRecordableCommands } from "./evaluation/redaction.js";
-import { InteractiveSessionController } from "./runtime/interactive-sessions.js";
 
 export function helpText(): string {
   return `${APP_NAME} ${APP_VERSION}
@@ -134,7 +133,8 @@ async function runControlled(options: CliOptions): Promise<number> {
       allowShell: replayPlan?.allowShell ?? options.shellEnabled,
       ...(replayPlan ? {
         requestedModel: replayPlan.requestedModel,
-        thinkingLevel: replayPlan.thinkingLevel
+        thinkingLevel: replayPlan.thinkingLevel,
+        tools: replayPlan.tools
       } : {})
     });
   } catch (error) {
@@ -217,47 +217,16 @@ export async function run(options: CliOptions): Promise<number> {
     (command, index, total) => console.error(`Setup ${index + 1}/${total}: ${command}`)
   );
   const { workspace } = ready;
-  let runtime: PiRuntime;
-  let sessionController: InteractiveSessionController;
   try {
-    sessionController = await InteractiveSessionController.create({
-      workspace: workspace.workspace,
-      sourceRoot: workspace.sourceRoot,
-      getTask: () => task,
-      allowShell: options.shellEnabled
-    });
-    const preferences = { objective: task.objective };
-    runtime = options.noSession
-      ? await sessionController.create({ type: "temporary" }, preferences)
-      : options.continueSession
-        ? await sessionController.continueRecentOrCreate(preferences)
-        : await sessionController.create({ type: "new" }, preferences);
-    task.objective = runtime.conversationObjective;
-    if (initialPrompt && initialPrompt !== task.objective) {
-      try {
-        await sessionController.updateObjective(runtime, initialPrompt);
-        task.objective = initialPrompt;
-      } catch (error) {
-        runtime.dispose();
-        throw error;
-      }
-    }
-  } catch (error) {
-    await discardManagedWorkspace(workspace);
-    throw error;
-  }
-
-  try {
-    const app = new CodingAgentTui({
-      runtime,
+    await runPiInteractive({
       task,
       workspace,
-      sessionController,
+      allowShell: options.shellEnabled,
+      continueSession: options.continueSession,
+      noSession: options.noSession,
       ...(initialPrompt ? { initialPrompt } : {})
     });
-    app.start();
   } catch (error) {
-    runtime.dispose();
     await discardManagedWorkspace(workspace);
     throw error;
   }

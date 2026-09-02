@@ -168,6 +168,7 @@ describe("redaction and comparison", () => {
       noSession: true,
       requestedModel: original.agent.model,
       thinkingLevel: "off",
+      tools: ["edit", "read", "write"],
       setupPreference: { mode: "disabled" }
     });
     plan.task.allowedPaths.push("extra.txt");

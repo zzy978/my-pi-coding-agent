@@ -9,6 +9,8 @@ import {
   createLocalPowerShellOperations,
   defineTool,
   createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
   createLsToolDefinition,
   createPowerShellToolDefinition,
   createReadToolDefinition,
@@ -113,8 +115,8 @@ export function createSafeToolDefinitions(
     : createBashToolDefinition(workspace, { operations: shellOperations });
   const fileTools: ToolDefinition[] = [
     defineTool(read),
-    defineTool(edit),
-    defineTool(write),
+    defineTool(createGrepToolDefinition(workspace)),
+    defineTool(createFindToolDefinition(workspace)),
     defineTool(createLsToolDefinition(workspace, {
       operations: {
         exists: async (absolutePath) => {
@@ -129,7 +131,9 @@ export function createSafeToolDefinitions(
         stat: async (absolutePath) => stat(await safeReadablePath(workspace, absolutePath)),
         readdir: async (absolutePath) => readdir(await safeReadablePath(workspace, absolutePath))
       }
-    }))
+    })),
+    defineTool(edit),
+    defineTool(write)
   ];
   return includeShell ? [fileTools[0]!, defineTool(shell), ...fileTools.slice(1)] : fileTools;
 }

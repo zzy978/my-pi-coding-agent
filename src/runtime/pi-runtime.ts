@@ -23,6 +23,7 @@ export interface PiRuntimeOptions {
   sessionId?: string;
   requestedModel?: { provider: string; id: string };
   thinkingLevel?: AgentSession["thinkingLevel"];
+  tools?: string[];
 }
 
 export class PiRuntime {
@@ -58,7 +59,9 @@ export class PiRuntime {
         noSkills: true,
         noPromptTemplates: true,
         noThemes: true,
-        extensionFactories: [createPolicyExtension(options.workspace, options.getTask)]
+        extensionFactories: [createPolicyExtension(options.workspace, options.getTask, {
+          allowShell: options.allowShell
+        })]
       }
     });
     const sessionManager = options.noSession
@@ -80,6 +83,7 @@ export class PiRuntime {
       sessionManager,
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
       noTools: "builtin",
       customTools: createSafeToolDefinitions(
         options.workspace,

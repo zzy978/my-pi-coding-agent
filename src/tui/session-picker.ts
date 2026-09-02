@@ -20,7 +20,7 @@ export class SessionPicker implements Component {
     this.list = new SelectList(sessions.map((session) => ({
       value: session.path,
       label: session.name?.trim() ? `${session.name.trim()} (${session.id.slice(0, 8)})` : session.id,
-      description: `${session.modified.toLocaleString()} • ${session.materialized ? `${session.messageCount} messages` : "empty"} • ${compact(session.firstMessage)}`
+      description: `${session.modified.toLocaleString()} • ${session.materialized ? `${session.messageCount} messages` : "empty"} • ${compact(session.objective ?? session.firstMessage)}`
     })), Math.min(sessions.length, 10), selectListTheme);
     const currentIndex = sessions.findIndex((session) => session.id === currentSessionId);
     if (currentIndex >= 0) this.list.setSelectedIndex(currentIndex);

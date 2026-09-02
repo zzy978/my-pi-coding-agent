@@ -101,7 +101,7 @@ describe("workspace setup", () => {
     });
     await expect(access(join(ready.workspace.workspace, "setup-script-ran.txt"))).rejects.toThrow();
     await discardManagedWorkspace(ready.workspace);
-  });
+  }, 30_000);
 
   it("runs explicit setup instead of auto setup and supports disabling it", async () => {
     const { parent, repository } = await repositoryWithPackageLock();

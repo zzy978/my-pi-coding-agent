@@ -11,6 +11,7 @@ export interface ReplayPlan {
   noSession: boolean;
   requestedModel: { provider: string; id: string };
   thinkingLevel: NonNullable<PiRuntimeOptions["thinkingLevel"]>;
+  tools: string[];
   setupPreference: SetupPreference;
 }
 
@@ -32,6 +33,7 @@ export function createReplayPlan(manifest: RunManifest, shellOverride?: boolean)
     noSession: manifest.agent.sessionMode === "ephemeral",
     requestedModel: { ...manifest.agent.model },
     thinkingLevel: manifest.agent.thinkingLevel as NonNullable<PiRuntimeOptions["thinkingLevel"]>,
+    tools: [...manifest.policy.tools],
     setupPreference: manifest.setup
       ? {
           mode: "resolved",

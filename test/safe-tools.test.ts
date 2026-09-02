@@ -33,8 +33,11 @@ describe("filesystem containment", () => {
   });
 
   it("includes shell by default and supports an explicit opt-out", () => {
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"]).map((tool) => tool.name)).toContain(process.platform === "win32" ? "powershell" : "bash");
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"], false).map((tool) => tool.name)).not.toContain(process.platform === "win32" ? "powershell" : "bash");
+    const shell = process.platform === "win32" ? "powershell" : "bash";
+    expect(createSafeToolDefinitions(process.cwd(), ["**/*"]).map((tool) => tool.name))
+      .toEqual(["read", shell, "grep", "find", "ls", "edit", "write"]);
+    expect(createSafeToolDefinitions(process.cwd(), ["**/*"], false).map((tool) => tool.name))
+      .toEqual(["read", "grep", "find", "ls", "edit", "write"]);
   });
 
   it("runs ordinary commands but gates deletion before spawning a process", async () => {
