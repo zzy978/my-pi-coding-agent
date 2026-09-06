@@ -12,6 +12,7 @@
 - 在每轮模型执行后运行确定性的验证命令。
 - 把任务、变更文件、验证输出和模型/会话信息写入 JSON 与 Markdown 报告。
 - 在 TUI 内新建持久会话、切换同一源仓库的已记录历史会话，或使用不落盘的临时会话。
+- 从失败评测提炼有证据引用的经验与 prompt/skill/strategy 候选；新鲜配对实验验证后，经人工晋升在 TUI 按需启用，并可撤销。
 - 提供 `read`、`grep`、`find`、`ls`、`edit`、`write` 和 Shell 全套编码工具；识别到删除或丢弃工作区内容的 Shell 命令时，在进程启动前要求人工单次审批，也可用 `--no-shell` 完全关闭 Shell。
 
 ## 环境要求
@@ -120,6 +121,68 @@ comparison.json/.md（回放）原始运行与回放的对比报告
 
 `verification_passed` 表示新运行独立通过 verifier 和路径审计，不表示模型文本或工具顺序逐字一致。可用 `--list-runs --json` 或 `--show-run <runId> --json` 获取机器可读输出。
 
+## 失败经验与候选实验
+
+此功能把“失败记录 → 经验候选 → 新鲜对照实验 → 人工晋升 → 按需使用”串成闭环。候选是指导文本，不会自动改写程序、安装全局 Skill，或改变工具权限与验证器。Skill 候选是过程性 Markdown，不是可执行插件。
+
+先选一个**配置了验证器**的失败 run，再提炼：
+
+```powershell
+pi-agent-tui --list-runs
+pi-agent-tui --analyze-run RUN_ID
+pi-agent-tui --list-experiences
+pi-agent-tui --show-experience EXPERIENCE_ID
+```
+
+将示例中的大写 ID 替换为实际 ID。分析会区分程序判定的失败事实与模型提出的原因假设，保存证据引用、适用条件、不适用条件、候选哈希和生成成本。模型生成使用来源 run 的模型配置，但以独立、无工具的请求运行；只发送有上限的脱敏评测证据，不读取原生会话内容。模型不可用、超时或返回格式不合格时保留观察记录，生成状态为 `failed`，不会伪造候选。
+
+没有验证器、运行不完整或 setup 失败时不会生成编码策略；成功运行会被忽略。没有验证器的旧 run 应重新录制并添加 `--verify`，直接重放不会补出缺失的验证标准。历史 trace 缺少错误细节时，系统只报告证据限制，不猜测未记录的代码过程。
+
+查看候选后，先做小规模探索，或使用默认 3 对实验：
+
+```powershell
+pi-agent-tui --experiment SOURCE_RUN_ID --candidate CANDIDATE_ID --pairs 1
+pi-agent-tui --experiment SOURCE_RUN_ID --candidate CANDIDATE_ID
+pi-agent-tui --list-experiments
+pi-agent-tui --show-experiment EXPERIMENT_ID --json
+```
+
+默认 3 对意味着最多 **6 次新的模型任务**，每个任务可能包含多次 API 请求并产生费用；历史 run 不充当对照。两臂在不同新 worktree 上交替执行，使用内存会话，并锁定来源任务、Git 提交、模型、思考级别、工具、setup、验证器和上下文哈希。treatment 只增加冻结候选文本。源仓库需保持干净；实验 worktree 在结束后清理，运行证据保留。`Ctrl+C` 请求中止，已完成的证据仍会保存。
+
+实验的模型阶段默认 15 分钟超时。已经启动的 setup/verifier 命令仍按来源配置的命令超时结束，不会被 `Ctrl+C` 立即终止；收到中止请求的实验不能用于晋升。
+
+`observed_improvement` / `no_observed_gain` / `observed_regression` 表示配对中观察到的结果；不完整运行、证据不足与配置不一致分别归入 `inconclusive` 或 `invalid_isolation`。少量配对不能证明统计显著性或跨任务普遍收益。
+
+普通 record/replay 不加载候选。实验运行的 v2 manifest 额外冻结候选文本、渲染版本与有效 prompt 哈希；对其 `--replay TRIAL_RUN_ID` 会恢复同一候选。旧 v1 运行仍可读取和回放。
+
+### 晋升、使用与撤销
+
+晋升要求同一候选在同一仓库的至少两个不同任务上完成实验，其中至少一个不是经验来源任务；每项证据至少 3 对完整运行，至少一项观察到改善，且不能含退化、越界或隔离失败。仅修改任务 ID 不算新任务。程序门槛不能替代人工阅读候选与确认适用性。
+
+```powershell
+pi-agent-tui --experiment HOLDOUT_RUN_ID --candidate CANDIDATE_ID
+pi-agent-tui --promote-candidate CANDIDATE_ID --evidence EXPERIMENT_ID_1 --evidence EXPERIMENT_ID_2 --approve
+pi-agent-tui D:\projects\my-repo --list-promotions
+```
+
+`--approve` 是明确的人工晋升/撤销确认，不是自动优化开关。晋升绑定仓库、候选哈希和实验证据，日常会话仍默认关闭；进入该仓库 TUI 后选择：
+
+固定验证命令不代表测试文件不可修改：若 `allowedPaths` 允许修改测试，仍可能出现“改测试而不是修实现”的假改善。晋升前应审查各臂变更，并尽可能使用不能被任务改写的外部验证器或留出检查；本功能不提供防作弊沙箱。
+
+```text
+/experience list
+/experience use CANDIDATE_ID
+/experience off
+```
+
+每轮重新检查晋升与证据；候选变更、撤销、记录损坏或读取失败会停止注入，会话切换也会清空选择。TUI 把候选作为单独的用户级补充消息；实验使用任务提示末尾补充，两者的会话历史和消息布局不同，因此不能直接把实验提升视为日常 TUI 的同等提升。
+
+```powershell
+pi-agent-tui --revoke-candidate CANDIDATE_ID --approve
+```
+
+撤销保留审计历史，即使原候选或来源 run 已丢失，也可依据有效晋升日志撤销。停止注入不会抹掉旧会话中已有的指导文本，需要干净上下文时请新建会话。经验、实验和晋升文件不可手工改写；修改候选应产生新版本并重新评估。日志 head 或证据哈希不匹配时拒绝启用，不自动退回旧晋升状态。
+
 ## TUI 命令
 
 交互模式支持 Pi 自带的完整命令集，包括 `/login`、`/logout`、`/model`、`/settings`、`/resume`、`/new`、`/name`、`/session`、`/tree`、`/fork`、`/clone`、`/compact`、`/copy`、`/export`、`/import`、`/share`、`/reload`、`/hotkeys` 和 `/quit`。此外，本项目注册以下宿主命令：
@@ -136,6 +199,7 @@ comparison.json/.md（回放）原始运行与回放的对比报告
 | `/verify` | 仅运行验证器 |
 | `/diff` | 查看变更文件和 diff 统计 |
 | `/status` | 查看宿主任务、工作区、模型与会话；用量使用 Pi 的 `/session` 查看 |
+| `/experience [list \| use <ID> \| off]` | 列出、选择或停用本仓库已晋升的经验候选 |
 
 Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保持不变；使用 `/hotkeys` 查看当前配置。
 
@@ -148,6 +212,9 @@ Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保
 ```text
 .picoding/
 ├── runs/       受控评测、回放及其证据
+├── experiences/ 失败观察、经验卡和不可变候选
+├── experiments/ 新鲜配对实验、各臂引用及成本对比
+├── promotions/ 人工晋升、撤销历史与完整性 head
 ├── worktree/   受控运行创建的 Git 工作树
 ├── sessions/   按源仓库隔离的持久会话
 ├── reports/    交互模式的验证报告
@@ -156,6 +223,8 @@ Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保
 ```
 
 在本仓库中默认根目录是 `D:\Agent\.picoding`。可用 `PI_TUI_AGENT_DATA_DIR` 改写整个数据根目录；各分类目录仍保持上述结构。`.picoding/` 已被 Git 忽略，其中的 `agent/auth.json` 可能包含凭据，不应提交或分享。
+
+数据根及托管分类目录必须是普通目录，不接受这些目录自身为 symlink/junction；需要迁移数据时将覆盖项指向实际目录。哈希用于发现文件损坏和版本变化，不抵御能够同时改写数据与哈希的本机管理员。
 
 ## 安全边界
 
@@ -182,6 +251,8 @@ npm run build
 - `src/verifier/verifier.ts`：确定性验证。
 - `src/report/report.ts`：运行证据报告。
 - `src/evaluation/`：受控运行、manifest、Trace、回放与对比。
+- `src/experience/`：失败分类、证据提炼、候选生成与人工晋升。
+- `src/experiment/`：配对运行、配置隔离检查与结果比较。
 
 ## License
 

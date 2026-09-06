@@ -16,6 +16,7 @@ export interface RunProcessOptions {
   timeoutMs?: number;
   maxOutputBytes?: number;
   env?: NodeJS.ProcessEnv;
+  windowsVerbatimArguments?: boolean;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
@@ -68,6 +69,7 @@ export async function runProcess(
       cwd: options.cwd,
       env: options.env ?? process.env,
       windowsHide: true,
+      windowsVerbatimArguments: options.windowsVerbatimArguments ?? false,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -140,7 +142,9 @@ export function shellCommand(command: string): { executable: string; args: strin
   if (process.platform === "win32") {
     return {
       executable: process.env.ComSpec || "cmd.exe",
-      args: ["/d", "/s", "/c", command]
+      // Match Node's cmd.exe shell invocation: /s strips the outer quotes;
+      // libuv must not replace the command's inner quotes with C-style escapes.
+      args: ["/d", "/s", "/c", `"${command}"`]
     };
   }
   return {
@@ -151,6 +155,9 @@ export function shellCommand(command: string): { executable: string; args: strin
 
 export async function runShellCommand(command: string, options: RunProcessOptions): Promise<ProcessResult> {
   const shell = shellCommand(command);
-  const result = await runProcess(shell.executable, shell.args, options);
+  const result = await runProcess(shell.executable, shell.args, {
+    ...options,
+    windowsVerbatimArguments: process.platform === "win32"
+  });
   return { ...result, command };
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,9 @@ describe("runtime data directory", () => {
     expect(directories).toEqual({
       root: dataDirectory,
       runs: join(dataDirectory, "runs"),
+      experiences: join(dataDirectory, "experiences"),
+      experiments: join(dataDirectory, "experiments"),
+      promotions: join(dataDirectory, "promotions"),
       worktree: join(dataDirectory, "worktree"),
       sessions: join(dataDirectory, "sessions"),
       reports: join(dataDirectory, "reports"),
@@ -49,12 +52,26 @@ describe("runtime data directory", () => {
     await expect(Promise.all([
       paths.root,
       paths.runs,
+      paths.experiences,
+      paths.experiments,
+      paths.promotions,
       paths.worktree,
       paths.sessions,
       paths.reports,
       paths.temp,
       paths.agent
     ].map((path) => stat(path))))
-      .resolves.toHaveLength(7);
+      .resolves.toHaveLength(10);
+  });
+
+  it("rejects a linked data root before creating artifact directories through it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-linked-data-"));
+    temporaryDirectories.push(root);
+    const target = await mkdtemp(join(tmpdir(), "pi-linked-target-"));
+    temporaryDirectories.push(target);
+    const link = join(root, "data");
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+    await expect(ensureDataDirectories(link)).rejects.toThrow(/regular directory|link/);
+    expect(await readdir(target)).toEqual([]);
   });
 });

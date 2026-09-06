@@ -1,15 +1,18 @@
 import type { ControlledPiRuntime } from "../runtime/controlled-pi-runtime.js";
 import { writeRunReport } from "../report/report.js";
 import { formatTaskPrompt, type TaskSpec } from "../task/task-spec.js";
+import { renderCandidatePrompt } from "../experience/candidate.js";
 import { runVerification, type VerificationReport } from "../verifier/verifier.js";
 import { getDiff, type WorkspaceInfo } from "../workspace/git.js";
 import type { SetupPlan } from "../workspace/setup.js";
 import { runWorkspaceSetup } from "../workspace/setup.js";
 import { RunRecorder, type FinalizedRun } from "./recorder.js";
 import { sanitizeVerificationReport } from "./redaction.js";
-import type { RunKind } from "./schema.js";
+import { EXPERIMENT_PROMPT_TIMEOUT_MS, type RunKind, type RunExperimentContext } from "./schema.js";
 
 interface ControlledRunOptions {
+  experiment?: RunExperimentContext;
+  signal?: AbortSignal;
   kind: RunKind;
   replayOf?: string;
   runtime: ControlledPiRuntime;
@@ -26,8 +29,36 @@ export interface ControlledRunResult extends FinalizedRun {
   setupFailed: boolean;
 }
 
+async function promptControlled(options: ControlledRunOptions, prompt: string): Promise<void> {
+  options.signal?.throwIfAborted();
+  const timeoutMs = options.experiment ? options.experiment.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS : undefined;
+  if (!options.signal && timeoutMs === undefined) {
+    await options.runtime.session.prompt(prompt);
+    return;
+  }
+  let cancelled = false;
+  let abortPromise: Promise<void> | undefined;
+  const abort = (): void => {
+    cancelled = true;
+    options.runtime.session.abortCompaction();
+    abortPromise ??= options.runtime.session.abort().catch(() => undefined);
+  };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  const timer = timeoutMs === undefined ? undefined : setTimeout(abort, timeoutMs);
+  timer?.unref();
+  try {
+    await options.runtime.session.prompt(prompt);
+    if (cancelled) throw new Error(options.signal?.aborted ? "Experiment aborted" : "Experiment model phase timed out");
+  } finally {
+    if (timer) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    await abortPromise;
+  }
+}
+
 export async function executeControlledRun(options: ControlledRunOptions): Promise<ControlledRunResult> {
   const recorder = await RunRecorder.create({
+    ...(options.experiment ? { experiment: options.experiment } : {}),
     kind: options.kind,
     ...(options.replayOf ? { replayOf: options.replayOf } : {}),
     task: options.task,
@@ -43,6 +74,7 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
   let executionError: unknown;
   let setupFailed = false;
   try {
+    options.signal?.throwIfAborted();
     options.onStatus?.(`Run ${recorder.manifest.runId}: setup`);
     recorder.record("setup_start", { source: options.setup.source, commandCount: options.setup.commands.length });
     try {
@@ -59,9 +91,12 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
       throw error;
     }
     options.onStatus?.(`Run ${recorder.manifest.runId}: agent`);
-    await options.runtime.session.prompt(formatTaskPrompt(options.task, options.task.objective));
+    const basePrompt = formatTaskPrompt(options.task, options.task.objective);
+    const candidate = recorder.manifest.experiment?.candidate;
+    await promptControlled(options, candidate ? renderCandidatePrompt(basePrompt, candidate) : basePrompt);
     recorder.record("verification_start", { commandCount: options.task.verify.length });
     options.onStatus?.(`Run ${recorder.manifest.runId}: verification`);
+    options.signal?.throwIfAborted();
     verification = await runVerification(options.workspace.workspace, options.task, (command, index, total) => {
       recorder.record("verification_command_start", { index, total, commandLength: command.length });
     });

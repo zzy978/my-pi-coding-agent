@@ -7,11 +7,13 @@ import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory
 } from "@earendil-works/pi-coding-agent";
+import { listActiveCandidates } from "../experience/promotions.js";
 import { createPolicyExtension } from "../policy/policy-extension.js";
 import { createSafeToolDefinitions } from "../policy/safe-tools.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
 import { createInteractiveHostExtension } from "./interactive-host-extension.js";
+import { createExperienceExtension } from "./experience-extension.js";
 import { canonicalWorkspacePath, WorkspaceSessionStore } from "./session-store.js";
 import { getDataDirectories, getDataDirectory } from "./data-dir.js";
 
@@ -112,6 +114,11 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
                 return objective;
               },
               ...(releaseSessionLock ? { releaseSessionLock } : {})
+            }),
+            createExperienceExtension({
+              sourceRepository: options.workspace.sourceRoot,
+              dataDirectory,
+              loadActiveCandidates: listActiveCandidates
             })
           ]
         }

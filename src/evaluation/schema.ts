@@ -3,15 +3,28 @@ import { isAbsolute } from "node:path";
 import { parseTaskSpec, type TaskSpec, type VerificationSpec } from "../task/task-spec.js";
 import type { VerificationCommandResult, VerificationReport } from "../verifier/verifier.js";
 import type { SetupCommand, SetupPlan } from "../workspace/setup.js";
+import { parseCandidateSnapshot, renderCandidatePrompt, type CandidateSnapshot } from "../experience/candidate.js";
+import { formatTaskPrompt } from "../task/task-spec.js";
 
 export const EVALUATION_SCHEMA_VERSION = 1 as const;
+export const EXPERIMENT_PROMPT_TIMEOUT_MS = 900_000;
 
 export type RunKind = "run" | "replay";
 export type RunStatus = "execution_failed" | "verification_failed" | "verification_passed";
 export type ComparisonStatus = "not_comparable" | RunStatus;
 
+export interface RunExperimentContext {
+  experimentId: string;
+  pairIndex: number;
+  arm: "control" | "treatment";
+  candidate?: CandidateSnapshot;
+  effectivePromptSha256: string;
+  promptTimeoutMs?: number;
+}
+
 export interface RunManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  experiment?: RunExperimentContext;
   runId: string;
   kind: RunKind;
   replayOf?: string;
@@ -264,7 +277,7 @@ function parseVerificationReport(value: unknown): VerificationReport {
 
 export function parseRunManifest(value: unknown): RunManifest {
   const record = objectValue(value, "manifest");
-  if (record.schemaVersion !== EVALUATION_SCHEMA_VERSION) {
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
     throw new EvaluationArtifactError(`Unsupported manifest schemaVersion: ${String(record.schemaVersion)}`);
   }
   const runId = assertRunId(record.runId);
@@ -329,9 +342,15 @@ export function parseRunManifest(value: unknown): RunManifest {
   if (record.replayOf === runId) throw new EvaluationArtifactError("Replay manifest cannot reference itself");
   const tools = stringArray(policy.tools, "manifest.policy.tools");
   if (tools.length === 0) throw new EvaluationArtifactError("manifest.policy.tools must not be empty");
+  if (record.schemaVersion === 1 && record.experiment !== undefined) {
+    throw new EvaluationArtifactError("Experimental metadata requires manifest version 2");
+  }
+  const experiment = record.schemaVersion === 2 ? parseRunExperiment(record.experiment, task) : undefined;
+  if (experiment && agent.sessionMode !== "ephemeral") throw new EvaluationArtifactError("Experimental runs require ephemeral sessions");
 
   return {
-    schemaVersion: 1,
+    schemaVersion: record.schemaVersion,
+    ...(experiment ? { experiment } : {}),
     runId,
     kind: record.kind,
     ...(record.replayOf === undefined ? {} : { replayOf: assertRunId(record.replayOf, "manifest.replayOf") }),
@@ -358,6 +377,26 @@ export function parseRunManifest(value: unknown): RunManifest {
     },
     contextFiles,
     verifier: { commands, sha256: verifierHash }
+  };
+}
+
+export function parseRunExperiment(value: unknown, task: TaskSpec): RunExperimentContext {
+  const record = objectValue(value, "manifest.experiment");
+  if (record.arm !== "control" && record.arm !== "treatment") throw new EvaluationArtifactError("Invalid experiment arm");
+  const pairIndex = integer(record.pairIndex, "experiment.pairIndex");
+  if (pairIndex > 99) throw new EvaluationArtifactError("Experiment pairIndex is out of range");
+  if (record.arm === "control" && record.candidate !== undefined) throw new EvaluationArtifactError("Control arm cannot include a candidate");
+  const candidate = record.arm === "treatment" ? parseCandidateSnapshot(record.candidate) : undefined;
+  const basePrompt = formatTaskPrompt(task, task.objective);
+  const prompt = candidate ? renderCandidatePrompt(basePrompt, candidate) : basePrompt;
+  const effectivePromptSha256 = assertSha256(record.effectivePromptSha256, "experiment.effectivePromptSha256");
+  if (sha256Text(prompt) !== effectivePromptSha256) throw new EvaluationArtifactError("Experiment prompt hash does not match frozen instructions");
+  const promptTimeoutMs = record.promptTimeoutMs === undefined ? undefined : integer(record.promptTimeoutMs, "experiment.promptTimeoutMs");
+  if (promptTimeoutMs !== undefined && (promptTimeoutMs < 1 || promptTimeoutMs > 3_600_000)) throw new EvaluationArtifactError("Experiment prompt timeout is out of range");
+  return {
+    experimentId: assertRunId(record.experimentId, "experiment.experimentId"), pairIndex, arm: record.arm,
+    ...(candidate ? { candidate } : {}), effectivePromptSha256,
+    ...(promptTimeoutMs === undefined ? {} : { promptTimeoutMs })
   };
 }
 

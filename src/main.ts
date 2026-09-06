@@ -13,6 +13,7 @@ import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
 import { assertRecordableCommands } from "./evaluation/redaction.js";
 import { ensureDataDirectories, getDataDirectory, type DataDirectories } from "./runtime/data-dir.js";
+import { handleLearningManagement } from "./learning-cli.js";
 
 export function helpText(): string {
   return `${APP_NAME} ${APP_VERSION}
@@ -35,7 +36,20 @@ Options:
       --list-runs         List recorded controlled runs
       --show-run <runId>  Show a recorded manifest and result
       --replay <runId>    Replay a run from its recorded baseline in a fresh worktree
-      --json              Use JSON output with --list-runs or --show-run
+      --analyze-run <id>  从失败 run 提炼经验和候选（可能调用模型）
+      --list-experiences 列出经验
+      --show-experience <id> 查看经验、生成状态与候选 ID
+      --experiment <runId> 对冻结任务执行新鲜配对实验（会调用模型）
+      --candidate <id>   指定实验候选；不修改普通 record/replay
+      --pairs <1..20>    配对次数，默认 3（共 6 次模型任务）
+      --list-experiments 列出实验
+      --show-experiment <id> 查看实验结果与成本
+      --promote-candidate <id> 用验证证据晋升候选
+      --evidence <id>    晋升所依据的实验 ID（可重复）
+      --approve          明确人工确认晋升或撤销
+      --revoke-candidate <id> 撤销候选，保留历史记录
+      --list-promotions 查看当前仓库晋升与撤销历史
+      --json              JSON output for read-only list/show commands
       --doctor            Check Node, Git, repository, and Pi model configuration
   -h, --help              Show help
   -v, --version           Show version
@@ -159,6 +173,7 @@ async function runControlled(
     const finalized = await executeControlledRun({
       kind: original ? "replay" : "run",
       ...(original ? { replayOf: original.manifest.runId } : {}),
+      ...(replayPlan?.experiment ? { experiment: replayPlan.experiment } : {}),
       runtime,
       task,
       workspace,
@@ -202,6 +217,8 @@ export async function run(options: CliOptions): Promise<number> {
   const directories = await ensureDataDirectories(dataDirectory);
   const managementResult = await handleRunManagement(options, dataDirectory);
   if (managementResult !== undefined) return managementResult;
+  const learningResult = await handleLearningManagement(options, dataDirectory);
+  if (learningResult !== undefined) return learningResult;
   if (options.record || options.replayRunId) return runControlled(options, dataDirectory, directories);
   if (!existsSync(options.workspace)) {
     console.error(`Workspace does not exist: ${options.workspace}`);

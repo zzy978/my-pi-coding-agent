@@ -1,9 +1,10 @@
 import type { ControlledPiRuntimeOptions } from "../runtime/controlled-pi-runtime.js";
 import type { TaskSpec } from "../task/task-spec.js";
-import type { RunManifest } from "./schema.js";
+import type { RunManifest, RunExperimentContext } from "./schema.js";
 import type { SetupPreference } from "../workspace/setup.js";
 
 export interface ReplayPlan {
+  experiment?: RunExperimentContext;
   sourceRepository: string;
   baselineCommit: string;
   task: TaskSpec;
@@ -21,6 +22,7 @@ export function createReplayPlan(manifest: RunManifest, shellOverride?: boolean)
     throw new Error(`Replay cannot ${shellOverride ? "enable" : "disable"} Shell when the recorded run used the opposite policy.`);
   }
   return {
+    ...(manifest.experiment ? { experiment: structuredClone(manifest.experiment) } : {}),
     sourceRepository: manifest.sourceRepository,
     baselineCommit: manifest.baselineCommit,
     task: {

@@ -24,6 +24,7 @@ function configurationDifferences(original: RunManifest, replay: RunManifest): s
   if (!equalJson(original.policy.tools, replay.policy.tools)) differences.push("tools");
   if (!equalJson(original.contextFiles, replay.contextFiles)) differences.push("contextFiles");
   if (original.verifier.sha256 !== replay.verifier.sha256) differences.push("verifier");
+  if (!equalJson(original.experiment, replay.experiment)) differences.push("experiment");
   return differences;
 }
 

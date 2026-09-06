@@ -1,5 +1,13 @@
 import { resolve } from "node:path";
 
+export type LearningOptions =
+  | { mode: "analyze"; runId: string }
+  | { mode: "list-experiences" | "list-experiments" | "list-promotions" }
+  | { mode: "show-experience" | "show-experiment"; id: string }
+  | { mode: "experiment"; runId: string; candidateId: string; pairs: number }
+  | { mode: "promote"; candidateId: string; evidenceIds: string[]; approved: boolean }
+  | { mode: "revoke"; candidateId: string; approved: boolean };
+
 export interface CliOptions {
   workspace: string;
   task?: string;
@@ -20,6 +28,7 @@ export interface CliOptions {
   doctor: boolean;
   help: boolean;
   version: boolean;
+  learning?: LearningOptions;
 }
 
 export class CliUsageError extends Error {
@@ -59,12 +68,20 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let doctor = false;
   let help = false;
   let version = false;
+  let learningFlag: string | undefined;
+  let learningId: string | undefined;
+  let candidateId: string | undefined;
+  let pairs: number | undefined;
+  const evidenceIds: string[] = [];
+  let approved = false;
+  let explicitWorkspace = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     switch (arg) {
       case "--cwd":
       case "-C":
+        explicitWorkspace = true;
         workspace = takeValue(args, index, arg);
         index += 1;
         break;
@@ -129,6 +146,43 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       case "--json":
         json = true;
         break;
+      case "--analyze-run":
+      case "--show-experience":
+      case "--experiment":
+      case "--show-experiment":
+      case "--promote-candidate":
+      case "--revoke-candidate":
+      case "--list-experiences":
+      case "--list-experiments":
+      case "--list-promotions":
+        if (learningFlag) throw new CliUsageError("Use only one experience/experiment command");
+        learningFlag = arg;
+        if (!arg.startsWith("--list-")) {
+          learningId = takeValue(args, index, arg);
+          index += 1;
+        }
+        break;
+      case "--candidate":
+        if (candidateId) throw new CliUsageError("--candidate may only be specified once");
+        candidateId = takeValue(args, index, arg);
+        index += 1;
+        break;
+      case "--pairs": {
+        const value = takeValue(args, index, arg);
+        if (pairs !== undefined || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 20) {
+          throw new CliUsageError("--pairs must be an integer between 1 and 20, specified once");
+        }
+        pairs = Number(value);
+        index += 1;
+        break;
+      }
+      case "--evidence":
+        evidenceIds.push(takeValue(args, index, arg));
+        index += 1;
+        break;
+      case "--approve":
+        approved = true;
+        break;
       case "--doctor":
         doctor = true;
         break;
@@ -149,7 +203,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
 
   if (task && taskFile) throw new CliUsageError("Use either --task or --task-file, not both");
   if (continueSession && noSession) throw new CliUsageError("--continue cannot be combined with --no-session");
-  if (positionalWorkspace && workspace !== cwd) {
+  if (positionalWorkspace && explicitWorkspace) {
     throw new CliUsageError("Use either a positional workspace or --cwd, not both");
   }
   if (positionalWorkspace) workspace = positionalWorkspace;
@@ -165,7 +219,48 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   if ((listRuns || showRunId) && (record || task || taskFile || verifyCommands.length || setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession || shellExplicit)) {
     throw new CliUsageError("Run listing and inspection cannot be combined with execution options");
   }
-  if (json && !(listRuns || showRunId)) throw new CliUsageError("--json requires --list-runs or --show-run");
+  if ((candidateId || pairs !== undefined) && learningFlag !== "--experiment") {
+    throw new CliUsageError("--candidate and --pairs require --experiment");
+  }
+  if (evidenceIds.length && learningFlag !== "--promote-candidate") throw new CliUsageError("--evidence requires --promote-candidate");
+  if (approved && learningFlag !== "--promote-candidate" && learningFlag !== "--revoke-candidate") {
+    throw new CliUsageError("--approve requires --promote-candidate or --revoke-candidate");
+  }
+  let learning: LearningOptions | undefined;
+  if (learningFlag) {
+    if (managementModes || record || doctor || task || taskFile || verifyCommands.length || setupCommands.length || noSetup ||
+      allowedPaths.length || legacyInPlace || continueSession || noSession || shellExplicit) {
+      throw new CliUsageError("Experience commands cannot be combined with other modes or execution overrides");
+    }
+    if ((positionalWorkspace || explicitWorkspace) && learningFlag !== "--list-promotions") {
+      throw new CliUsageError("This command restores its repository from recorded evidence; do not pass a workspace");
+    }
+    switch (learningFlag) {
+      case "--analyze-run": learning = { mode: "analyze", runId: learningId! }; break;
+      case "--show-experience": learning = { mode: "show-experience", id: learningId! }; break;
+      case "--show-experiment": learning = { mode: "show-experiment", id: learningId! }; break;
+      case "--list-experiences": learning = { mode: "list-experiences" }; break;
+      case "--list-experiments": learning = { mode: "list-experiments" }; break;
+      case "--list-promotions": learning = { mode: "list-promotions" }; break;
+      case "--experiment":
+        if (!candidateId) throw new CliUsageError("--experiment requires --candidate");
+        learning = { mode: "experiment", runId: learningId!, candidateId, pairs: pairs ?? 3 };
+        break;
+      case "--promote-candidate":
+        if (!approved) throw new CliUsageError("--promote-candidate requires explicit human confirmation with --approve");
+        if (!evidenceIds.length) throw new CliUsageError("--promote-candidate requires --evidence experiment IDs");
+        learning = { mode: "promote", candidateId: learningId!, evidenceIds, approved };
+        break;
+      case "--revoke-candidate":
+        if (!approved) throw new CliUsageError("--revoke-candidate requires explicit human confirmation with --approve");
+        learning = { mode: "revoke", candidateId: learningId!, approved };
+        break;
+    }
+  }
+  const learningInspection = learning && ["list-experiences", "show-experience", "list-experiments", "show-experiment", "list-promotions"].includes(learning.mode);
+  if (json && !(listRuns || showRunId || learningInspection)) {
+    throw new CliUsageError("--json requires --list-runs, --show-run, or a read-only experience/experiment inspection");
+  }
 
   return {
     workspace: resolve(cwd, workspace),
@@ -186,6 +281,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     json,
     doctor,
     help,
-    version
+    version,
+    ...(learning ? { learning } : {})
   };
 }

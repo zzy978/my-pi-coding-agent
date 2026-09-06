@@ -7,9 +7,11 @@ import {
   parseRunManifest,
   parseRunResult,
   sha256Json,
+  sha256Text,
   type RunManifest,
   type RunResult
 } from "../src/evaluation/schema.js";
+import { formatTaskPrompt } from "../src/task/task-spec.js";
 
 const commit = "a".repeat(40);
 
@@ -79,6 +81,20 @@ function result(runId = "run-one", status: RunResult["status"] = "verification_p
 }
 
 describe("evaluation artifact schemas", () => {
+  it("preserves frozen experimental replay metadata while leaving v1 unchanged", () => {
+    const original = manifest();
+    const experiment = {
+      experimentId: "experiment-one", pairIndex: 0, arm: "control",
+      effectivePromptSha256: sha256Text(formatTaskPrompt(original.task.content, original.task.content.objective))
+    };
+    const experimental = parseRunManifest({ ...original, schemaVersion: 2, experiment });
+    expect(experimental.schemaVersion).toBe(2);
+    expect(createReplayPlan(experimental)).toHaveProperty("experiment", experiment);
+    expect(parseRunManifest(original)).toEqual(original);
+    expect(() => parseRunManifest({ ...original, experiment })).toThrow("version 2");
+    expect(() => parseRunManifest({ ...original, schemaVersion: 2, experiment: { ...experiment, effectivePromptSha256: "f".repeat(64) } })).toThrow("prompt hash");
+  });
+
   it("round-trips a complete manifest with stable hashes", () => {
     const value = manifest();
     expect(parseRunManifest(JSON.parse(JSON.stringify(value)))).toEqual(value);
