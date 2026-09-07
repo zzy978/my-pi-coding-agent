@@ -35,7 +35,6 @@ export class ControlledPiRuntime {
   ) {}
 
   static async create(options: ControlledPiRuntimeOptions): Promise<ControlledPiRuntime> {
-    const task = options.getTask();
     const directories = getDataDirectories();
     const agentDirectory = options.agentDirectory ?? directories.agent;
     const sessionDirectory = options.sessionDirectory ?? join(directories.sessions, "controlled");
@@ -74,7 +73,6 @@ export class ControlledPiRuntime {
       noTools: "builtin",
       customTools: createSafeToolDefinitions(
         options.workspace,
-        task.allowedPaths,
         options.allowShell,
         () => Promise.resolve(false)
       )

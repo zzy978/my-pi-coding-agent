@@ -1,9 +1,5 @@
 id: add-health-command
 objective: Add a health-check command and document how to use it.
-allowedPaths:
-  - src/**
-  - test/**
-  - README.md
 verify:
   - command: npm test
     timeoutMs: 120000

@@ -1,7 +1,8 @@
 import type { ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { TaskSpec } from "../task/task-spec.js";
 import { checkCommand } from "./command-policy.js";
-import { isAllowedChangedPath, isSensitiveReadPath, relativePathWithin } from "./path-policy.js";
+import { commandPolicyDiagnostic } from "./command-diagnostics.js";
+import { assertFilesystemPath } from "./safe-tools.js";
 
 export interface PolicyExtensionOptions {
   allowShell?: boolean;
@@ -9,7 +10,7 @@ export interface PolicyExtensionOptions {
 }
 
 export function taskPolicyText(task: TaskSpec): string {
-  return `\n\n# Host task policy\n- Work only on task ${task.id}: ${task.objective}\n- Files may be changed only when they match: ${task.allowedPaths.join(", ")}\n- Verification commands: ${task.verify.map((item) => item.command).join("; ") || "not configured"}\n- Completion criteria: ${task.doneWhen.join("; ") || "not configured"}\n- Never edit .git, .env files, or node_modules.\n- Do not commit, push, or rewrite Git history.\n- Shell deletion and destructive working-tree commands require explicit human approval. Never disguise or indirectly encode a deletion to bypass that approval.\n- Verification is performed by the host after the turn. Do not claim success without command evidence.\n- Use the primary natural language of the current user message for all prose replies; an explicit language request takes precedence.\n- If a requested action conflicts with these rules, explain the conflict instead of bypassing it.`;
+  return `\n\n# Host task policy\n- Work only on task ${task.id}: ${task.objective}\n- Paths may be absolute or relative to the starting directory; access is not confined to that directory.\n- Verification commands: ${task.verify.map((item) => item.command).join("; ") || "not configured"}\n- Completion criteria: ${task.doneWhen.filter((item) => item !== "No changed file is outside allowedPaths").join("; ") || "not configured"}\n- Never edit .git, .env files, or node_modules.\n- Do not commit, push, or rewrite Git history.\n- Shell deletion and destructive working-tree commands require explicit human approval. Never disguise or indirectly encode a deletion to bypass that approval.\n- Verification is performed by the host after the turn. Do not claim success without command evidence.\n- Use the primary natural language of the current user message for all prose replies; an explicit language request takes precedence.\n- If a requested action conflicts with these rules, explain the conflict instead of bypassing it.`;
 }
 
 function deniedShellResult(message: string) {
@@ -61,27 +62,14 @@ export function createPolicyExtension(
       }));
 
       pi.on("tool_call", async (event, ctx) => {
-        const task = getTask();
-        if (event.toolName === "write" || event.toolName === "edit") {
-          const inputPath = typeof event.input.path === "string" ? event.input.path : "";
-          const relativePath = relativePathWithin(workspace, inputPath);
-          if (relativePath === null || !isAllowedChangedPath(relativePath, task.allowedPaths)) {
-            return {
-              block: true,
-              terminate: true,
-              reason: `Write blocked by task policy: ${inputPath || "missing path"}`
-            };
-          }
-        }
-
-        if (["read", "grep", "find", "ls"].includes(event.toolName)) {
-          const inputPath = "path" in event.input && typeof event.input.path === "string" ? event.input.path : ".";
-          const relativePath = relativePathWithin(workspace, inputPath);
-          if (relativePath === null) {
-            return { block: true, reason: `Read blocked outside workspace: ${inputPath}` };
-          }
-          if (isSensitiveReadPath(relativePath)) {
-            return { block: true, reason: `Read blocked for protected path: ${relativePath}` };
+        const writable = event.toolName === "write" || event.toolName === "edit";
+        if (writable || ["read", "grep", "find", "ls"].includes(event.toolName)) {
+          const inputPath = "path" in event.input && typeof event.input.path === "string" ? event.input.path : writable ? "" : ".";
+          try {
+            if (writable && !inputPath) throw new Error("Missing path");
+            await assertFilesystemPath(workspace, inputPath, writable);
+          } catch (error) {
+            return { block: true, reason: error instanceof Error ? error.message : String(error) };
           }
         }
 
@@ -92,14 +80,14 @@ export function createPolicyExtension(
           const command = typeof event.input.command === "string" ? event.input.command : "";
           const result = checkCommand(command);
           if (!result.allowed) {
-            return { block: true, terminate: true, reason: `Command blocked: ${result.reason ?? "policy violation"}` };
+            return { block: true, terminate: true, reason: commandPolicyDiagnostic(command, result) };
           }
           if (result.requiresApproval && options.interactiveShellApproval) {
             if (!ctx.hasUI) {
-              return { block: true, reason: "Destructive Shell command requires interactive approval" };
+              return { block: true, reason: commandPolicyDiagnostic(command, result, true) };
             }
             const approved = await requestShellApproval(ctx, result.reason, command);
-            if (!approved) return { block: true, reason: "Destructive Shell command was denied" };
+            if (!approved) return { block: true, reason: commandPolicyDiagnostic(command, result, true) };
           }
         }
         return undefined;
@@ -109,14 +97,14 @@ export function createPolicyExtension(
         if (!allowShell) return { result: deniedShellResult("Shell is disabled for this run") };
         const result = checkCommand(event.command);
         if (!result.allowed) {
-          return { result: deniedShellResult(`Command blocked: ${result.reason ?? "policy violation"}`) };
+          return { result: deniedShellResult(commandPolicyDiagnostic(event.command, result)) };
         }
         if (!result.requiresApproval) return undefined;
         if (!options.interactiveShellApproval || !ctx.hasUI) {
-          return { result: deniedShellResult("Destructive Shell command requires interactive approval") };
+          return { result: deniedShellResult(commandPolicyDiagnostic(event.command, result, true)) };
         }
         const approved = await requestShellApproval(ctx, result.reason, event.command);
-        return approved ? undefined : { result: deniedShellResult("Destructive Shell command was denied") };
+        return approved ? undefined : { result: deniedShellResult(commandPolicyDiagnostic(event.command, result, true)) };
       });
     }
   };

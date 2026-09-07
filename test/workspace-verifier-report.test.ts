@@ -111,7 +111,7 @@ describe("Git workspace", () => {
 });
 
 describe("verification and reports", () => {
-  it("requires configured passing commands and rejects out-of-scope changes", async () => {
+  it("accepts changes outside legacy allowed globs when commands pass", async () => {
     const { repository } = await temporaryRepository();
     await mkdir(join(repository, "src"));
     await writeFile(join(repository, "src", "ok.ts"), "export {};\n", "utf8");
@@ -124,7 +124,16 @@ describe("verification and reports", () => {
     });
     const report = await runVerification(repository, task);
     expect(report.commands[0]?.status).toBe("passed");
-    expect(report.disallowedChangedFiles).toEqual(["outside.txt"]);
+    expect(report.disallowedChangedFiles).toEqual([]);
+    expect(report.success).toBe(true);
+  });
+
+  it("still rejects changes to protected files", async () => {
+    const { repository } = await temporaryRepository();
+    await writeFile(join(repository, ".env.local"), "EXAMPLE=value\n", "utf8");
+    const task = parseTaskSpec({ objective: "check protected changes", verify: [process.platform === "win32" ? "exit 0" : "true"] });
+    const report = await runVerification(repository, task);
+    expect(report.disallowedChangedFiles).toEqual([".env.local"]);
     expect(report.success).toBe(false);
   });
 
@@ -139,8 +148,8 @@ describe("verification and reports", () => {
     const report = await runVerification(repository, task);
     expect(report.commands[0]?.status).toBe("passed");
     expect(report.changedFiles).toContain("generated.txt");
-    expect(report.disallowedChangedFiles).toContain("generated.txt");
-    expect(report.success).toBe(false);
+    expect(report.disallowedChangedFiles).toEqual([]);
+    expect(report.success).toBe(true);
   });
 
   it("audits both sides of a Git rename", async () => {
@@ -161,8 +170,8 @@ describe("verification and reports", () => {
     });
     const report = await runVerification(repository, task);
     expect(report.changedFiles).toEqual(["secret.txt", "src/secret.txt"]);
-    expect(report.disallowedChangedFiles).toEqual(["secret.txt"]);
-    expect(report.success).toBe(false);
+    expect(report.disallowedChangedFiles).toEqual([]);
+    expect(report.success).toBe(true);
   });
 
   it("writes machine-readable and human-readable run reports", async () => {

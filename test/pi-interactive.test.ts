@@ -193,7 +193,7 @@ describe("full Pi interactive runtime", () => {
     const firstSessionId = first.session.sessionId;
     expect(firstTask).toMatchObject({
       objective: "repair the selected parser",
-      allowedPaths: ["src/**", "test/**"],
+      allowedPaths: ["src/**"],
       verify: [{ command: "npm test", timeoutMs: 120_000 }]
     });
     await first.dispose();

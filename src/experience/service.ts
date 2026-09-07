@@ -23,7 +23,7 @@ export async function analyzeRun(runId: string, dataDirectory: string, dependenc
     schemaVersion: 1, id: randomUUID(), createdAt: now, sourceRunId: source.manifest.runId, sourceRepository: source.manifest.sourceRepository,
     sourceManifestSha256: sha256Json(source.manifest), ...(source.result ? { sourceResultSha256: sha256Json(source.result) } : {}),
     taskSha256: source.manifest.task.sha256, observation, evidence: collected.evidence, warnings: collected.warnings, candidates: [],
-    synthesis: { status: "skipped", generatorVersion: 1, model: { ...source.manifest.agent.model }, thinkingLevel: "low", startedAt: now, completedAt: now }
+    synthesis: { status: "skipped", generatorVersion: 1, model: { ...source.manifest.agent.model }, thinkingLevel: "high", startedAt: now, completedAt: now }
   };
   if (observation.eligibility === "eligible") {
     try {

@@ -115,8 +115,12 @@ function parseCard(value: unknown, evidence: EvidenceItem[]): ExperienceCard {
 export function parseSynthesisOutput(source: string, evidence: EvidenceItem[]): { card: ExperienceCard; candidates: CandidateProposal[] } {
   if (source.length > 64_000) throw new Error("Synthesis output exceeds size limit");
   assertNoSecrets(source);
+  // Unwrap only a complete response fence; never extract JSON from surrounding prose.
+  const trimmed = source.trim();
+  const fenced = /^```(?:json)?[\t ]*\r?\n([\s\S]*)\r?\n```$/i.exec(trimmed);
+  const json = fenced?.[1] ?? trimmed;
   let parsed: unknown;
-  try { parsed = JSON.parse(source); } catch { throw new Error("Synthesis output is not strict JSON"); }
+  try { parsed = JSON.parse(json); } catch { throw new Error("Synthesis output is not strict JSON (expected a JSON object or one complete JSON code fence)"); }
   const record = object(parsed, "synthesis");
   keys(record, ["card", "candidates"], "synthesis");
   if (!Array.isArray(record.candidates) || record.candidates.length < 1 || record.candidates.length > 3) throw new Error("Synthesis must propose 1-3 candidates");

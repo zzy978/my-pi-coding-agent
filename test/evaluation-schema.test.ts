@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { compareRuns } from "../src/evaluation/comparison.js";
-import { assertRecordableCommands, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "../src/evaluation/redaction.js";
+import { assertRecordableCommands, redactCommandPreview, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "../src/evaluation/redaction.js";
 import { createReplayPlan } from "../src/evaluation/replay.js";
 import {
   parseRunManifest,
@@ -140,6 +140,20 @@ describe("evaluation artifact schemas", () => {
 });
 
 describe("redaction and comparison", () => {
+  it("redacts authorization bearer values before generic credential fields", () => {
+    expect(redactCommandPreview('format D: --header "Authorization: Bearer example-private-bearer"'))
+      .not.toContain("example-private-bearer");
+  });
+
+  it("bounds policy previews and removes credentials before truncation", () => {
+    const preview = redactCommandPreview('format D: --password "two words" --token=abcdefgh https://user:pass@example.com\u001b[31m\u202e');
+    for (const secret of ["two words", "abcdefgh", "user:pass", "\u001b", "\u202e"]) expect(preview).not.toContain(secret);
+    expect(preview).toContain("format D:");
+    expect(preview).toContain("\\u001b");
+    expect(redactCommandPreview("format D: " + "x".repeat(5000)).length).toBeLessThanOrEqual(1201);
+    expect(redactCommandPreview("format D:; Get-Content .env")).toBe("[REDACTED SENSITIVE COMMAND]");
+  });
+
   it("omits tool bodies and suppresses env verifier output", () => {
     expect(summarizeToolArguments({ path: "src/a.ts", content: "top secret", token: "abc" })).toEqual({
       path: "src/a.ts",

@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
@@ -17,7 +17,8 @@ import {
   createWriteToolDefinition
 } from "@earendil-works/pi-coding-agent";
 import { checkCommand } from "./command-policy.js";
-import { assertReadablePath, assertWritablePath, relativePathWithin } from "./path-policy.js";
+import { commandPolicyDiagnostic } from "./command-diagnostics.js";
+import { assertReadablePath, assertWritablePath } from "./path-policy.js";
 
 interface ShellApprovalRequest {
   command: string;
@@ -26,16 +27,18 @@ interface ShellApprovalRequest {
 
 type ShellApprovalHandler = (request: ShellApprovalRequest) => Promise<boolean>;
 
-export async function assertFilesystemContained(workspace: string, targetPath: string): Promise<string> {
-  const realWorkspace = await realpath(workspace);
-  let existingAncestor = targetPath;
+// Resolve existing ancestors so links cannot hide protected paths, including new files.
+export async function assertFilesystemPath(workspace: string, targetPath: string, writable = false): Promise<string> {
+  const check = (path: string) => writable
+    ? assertWritablePath(workspace, path)
+    : assertReadablePath(workspace, path);
+  const absolutePath = check(targetPath);
+  let existingAncestor = absolutePath;
   while (true) {
     try {
       const realTarget = await realpath(existingAncestor);
-      if (relativePathWithin(realWorkspace, realTarget) === null) {
-        throw new Error(`Path resolves outside the workspace through a symbolic link: ${targetPath}`);
-      }
-      return targetPath;
+      check(resolve(realTarget, relative(existingAncestor, absolutePath)));
+      return absolutePath;
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       const parent = dirname(existingAncestor);
@@ -46,11 +49,11 @@ export async function assertFilesystemContained(workspace: string, targetPath: s
 }
 
 async function safeReadablePath(workspace: string, targetPath: string): Promise<string> {
-  return assertFilesystemContained(workspace, assertReadablePath(workspace, targetPath));
+  return assertFilesystemPath(workspace, targetPath);
 }
 
-async function safeWritablePath(workspace: string, targetPath: string, allowedPaths: string[]): Promise<string> {
-  const safePath = await assertFilesystemContained(workspace, assertWritablePath(workspace, targetPath, allowedPaths));
+async function safeWritablePath(workspace: string, targetPath: string): Promise<string> {
+  const safePath = await assertFilesystemPath(workspace, targetPath, true);
   try {
     const metadata = await stat(safePath);
     if (metadata.isFile() && metadata.nlink > 1) {
@@ -70,14 +73,14 @@ export function createApprovalGatedShellOperations(
     exec: async (command, cwd, options) => {
       const policy = checkCommand(command);
       if (!policy.allowed) {
-        throw new Error(`Command blocked: ${policy.reason ?? "policy violation"}`);
+        throw new Error(commandPolicyDiagnostic(command, policy));
       }
       if (policy.requiresApproval) {
         const approved = await requestApproval({
           command,
           reason: policy.reason ?? "shell command may delete data"
         });
-        if (!approved) throw new Error("Deletion command denied: explicit human approval was not granted");
+        if (!approved) throw new Error(commandPolicyDiagnostic(command, policy, true));
       }
       return operations.exec(command, cwd, options);
     }
@@ -86,7 +89,6 @@ export function createApprovalGatedShellOperations(
 
 export function createSafeToolDefinitions(
   workspace: string,
-  allowedPaths: string[],
   includeShell = true,
   requestApproval: ShellApprovalHandler = () => Promise.resolve(false)
 ): ToolDefinition[] {
@@ -99,17 +101,17 @@ export function createSafeToolDefinitions(
   const write = createWriteToolDefinition(workspace, {
     operations: {
       mkdir: async (directory) => {
-        const safeDirectory = await assertFilesystemContained(workspace, assertReadablePath(workspace, directory));
+        const safeDirectory = await assertFilesystemPath(workspace, directory, true);
         await mkdir(safeDirectory, { recursive: true });
       },
-      writeFile: async (absolutePath, content) => writeFile(await safeWritablePath(workspace, absolutePath, allowedPaths), content, "utf8")
+      writeFile: async (absolutePath, content) => writeFile(await safeWritablePath(workspace, absolutePath), content, "utf8")
     }
   });
   const edit = createEditToolDefinition(workspace, {
     operations: {
-      readFile: async (absolutePath) => readFile(await safeWritablePath(workspace, absolutePath, allowedPaths)),
-      access: async (absolutePath) => access(await safeWritablePath(workspace, absolutePath, allowedPaths), constants.R_OK | constants.W_OK),
-      writeFile: async (absolutePath, content) => writeFile(await safeWritablePath(workspace, absolutePath, allowedPaths), content, "utf8")
+      readFile: async (absolutePath) => readFile(await safeWritablePath(workspace, absolutePath)),
+      access: async (absolutePath) => access(await safeWritablePath(workspace, absolutePath), constants.R_OK | constants.W_OK),
+      writeFile: async (absolutePath, content) => writeFile(await safeWritablePath(workspace, absolutePath), content, "utf8")
     }
   });
   const shellOperations = createApprovalGatedShellOperations(

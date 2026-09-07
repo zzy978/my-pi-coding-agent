@@ -194,15 +194,9 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       });
 
       pi.registerCommand("allow", {
-        description: "Add an allowed changed-path glob",
-        handler: (args, ctx) => {
-          const glob = args.trim();
-          if (!glob) {
-            ctx.ui.notify("Usage: /allow <glob>", "warning");
-            return completed();
-          }
-          if (!options.task.allowedPaths.includes(glob)) options.task.allowedPaths.push(glob);
-          ctx.ui.notify(`Allowed path added: ${glob}`, "info");
+        description: "Legacy command; paths are unrestricted",
+        handler: (_args, ctx) => {
+          ctx.ui.notify("路径限制已取消，无需使用 /allow。", "info");
           return completed();
         }
       });
@@ -250,7 +244,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
         handler: (_args, ctx) => {
           ctx.ui.notify([
             `Task: ${options.task.objective}`,
-            `Allowed: ${options.task.allowedPaths.join(", ")}`,
+            "Paths: unrestricted (protected files remain protected)",
             `Verifiers: ${options.task.verify.map((item) => item.command).join("; ") || "not configured"}`,
             `Workspace: ${options.workspace.workspace}`,
             `Branch: ${options.workspace.branch}`,

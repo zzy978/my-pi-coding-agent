@@ -39,6 +39,12 @@ function extensionContext(select: SelectHandler, hasUI = true): ExtensionContext
 }
 
 describe("interactive policy extension", () => {
+  it.each(["read", "grep", "find", "ls", "write", "edit"])("allows external paths through %s", async (toolName) => {
+    const handlers = await policyHandlers();
+    await expect(eventHandler(handlers, "tool_call")({ toolName, input: { path: "../other/file.txt" } },
+      extensionContext(() => Promise.resolve(undefined)))).resolves.toBeUndefined();
+  });
+
   it("puts denial first and renders destructive commands without terminal control characters", async () => {
     const handlers = await policyHandlers();
     const select = vi.fn<SelectHandler>(() => Promise.resolve("Approve once"));

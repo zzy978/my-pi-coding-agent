@@ -130,7 +130,6 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
         noTools: "builtin",
         customTools: createSafeToolDefinitions(
           cwd,
-          options.task.allowedPaths,
           options.allowShell,
           () => Promise.resolve(true)
         )

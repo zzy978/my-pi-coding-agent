@@ -12,6 +12,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "benchmark:exercism": "tsx src/benchmark/exercism-cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
@@ -21,8 +22,8 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.3",
-    "@earendil-works/pi-tui": "0.84.3",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
     "chalk": "5.6.2",
     "minimatch": "10.2.5",
     "yaml": "2.9.0"

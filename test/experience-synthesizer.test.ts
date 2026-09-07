@@ -40,7 +40,7 @@ describe("isolated experience synthesis", () => {
           expect(context.messages).toHaveLength(1);
           expect(context.messages[0]?.content).toContain("verification_failed");
           expect(JSON.stringify(context)).not.toContain("isolated-data");
-          expect(options).toMatchObject({ toolChoice: "none", reasoning: "low", maxRetries: 0 });
+          expect(options).toMatchObject({ toolChoice: "none", reasoning: "high", maxRetries: 0 });
           return Promise.resolve(answer);
         }
       });

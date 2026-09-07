@@ -64,12 +64,12 @@ describe("failure experience compilation", () => {
     await expect(saveExperience(bundle, fixture.dataDirectory)).rejects.toThrow(/EEXIST|exist/i);
   });
 
-  it("grounds a hypothesis in verifier evidence and writes immutable candidates without changing the run", async () => {
+  it.each([false, true])("grounds evidence and persists immutable candidates with fenced response=%s", async (fenced) => {
     const fixture = await sourceRun();
     const before = await readFile(join(fixture.directory, "result.json"), "utf8");
     const bundle = await analyzeRun("source", fixture.dataDirectory, { synthesize: (input) => {
       expect(JSON.stringify(input)).toContain("Expected 0, received 1");
-      return Promise.resolve({ text: proposal(), usage: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, total: 30, cost: 0.001 } });
+      return Promise.resolve({ text: fenced ? "```json\n" + proposal() + "\n```" : proposal(), usage: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, total: 30, cost: 0.001 } });
     } });
     expect(bundle.observation.category).toBe("verifier_failed");
     expect(bundle.synthesis).toMatchObject({ status: "completed", usage: { total: 30 } });
@@ -81,7 +81,8 @@ describe("failure experience compilation", () => {
 
   it.each([
     ["unreferenced hypothesis", () => proposal("trace.jsonl#999")],
-    ["malformed JSON", () => "```json\n{}\n```"],
+    ["incomplete structure", () => "```json\n{}\n```"],
+    ["malformed JSON", () => "```json\n{\n```"],
     ["secret", () => proposal().replace("Read the failing assertion", "Use sk-12345678901234567890")]
   ])("retains facts but no candidates after %s output", async (_label, text) => {
     const fixture = await sourceRun();

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-agent";
 import { APP_VERSION } from "../config.js";
+import { policyFailureSummary } from "../policy/command-diagnostics.js";
 import type { ControlledPiRuntime } from "../runtime/controlled-pi-runtime.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import { PROMPT_POLICY_VERSION } from "../task/task-spec.js";
@@ -170,11 +171,13 @@ export class RunRecorder {
       case "tool_execution_end": {
         const started = this.toolStartedAt.get(event.toolCallId);
         this.toolStartedAt.delete(event.toolCallId);
-        if (event.isError) this.addError(`Tool ${event.toolName} failed`);
+        const policyFailure = event.isError ? policyFailureSummary(event.result) : undefined;
+        if (event.isError) this.addError(policyFailure ?? `Tool ${event.toolName} failed`);
         this.record("tool_end", {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           isError: event.isError,
+          ...(policyFailure ? { policyFailure } : {}),
           ...(started === undefined ? {} : { durationMs: Date.now() - started })
         });
         break;

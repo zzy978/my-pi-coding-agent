@@ -35,24 +35,22 @@ export function isSensitiveReadPath(relativePath: string): boolean {
   return SENSITIVE_READ_PATHS.some((pattern) => minimatch(normalized, pattern, MATCH_OPTIONS));
 }
 
-export function isAllowedChangedPath(relativePath: string, allowedPaths: string[]): boolean {
+export function isAllowedChangedPath(relativePath: string): boolean {
   const normalized = normalizeRelativePath(relativePath);
   if (!normalized || isProtectedPath(normalized)) return false;
-  return allowedPaths.some((pattern) => minimatch(normalized, pattern, { ...MATCH_OPTIONS, matchBase: true }));
+  return true;
 }
 
 export function assertReadablePath(workspace: string, filePath: string): string {
-  const relativePath = relativePathWithin(workspace, filePath);
-  if (relativePath === null) throw new Error(`Path is outside the workspace: ${filePath}`);
-  if (isSensitiveReadPath(relativePath)) throw new Error(`Path is protected from reads: ${relativePath}`);
-  return resolve(workspace, relativePath);
+  const absolutePath = resolve(workspace, filePath);
+  if (isSensitiveReadPath(absolutePath)) throw new Error(`Path is protected from reads: ${filePath}`);
+  return absolutePath;
 }
 
-export function assertWritablePath(workspace: string, filePath: string, allowedPaths: string[]): string {
-  const relativePath = relativePathWithin(workspace, filePath);
-  if (relativePath === null) throw new Error(`Path is outside the workspace: ${filePath}`);
-  if (!isAllowedChangedPath(relativePath, allowedPaths)) {
-    throw new Error(`Path is not allowed by this task: ${relativePath || filePath}`);
+export function assertWritablePath(workspace: string, filePath: string): string {
+  const absolutePath = resolve(workspace, filePath);
+  if (!filePath || isProtectedPath(absolutePath)) {
+    throw new Error(`Path is not allowed: ${filePath}`);
   }
-  return resolve(workspace, relativePath);
+  return absolutePath;
 }

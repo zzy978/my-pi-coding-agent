@@ -29,6 +29,16 @@ describe("TaskSpec", () => {
     expect(formatTaskPrompt(task)).toContain("Verification commands: npm test; npm run check");
   });
 
+  it("does not reintroduce legacy path restrictions through the prompt", () => {
+    const task = parseTaskSpec({ objective: "cross-directory work", allowedPaths: ["src/**"],
+      doneWhen: ["No changed file is outside allowedPaths", "Tests pass"] });
+    const prompt = formatTaskPrompt(task);
+    expect(prompt).not.toContain("src/**");
+    expect(prompt).not.toContain("No changed file is outside allowedPaths");
+    expect(prompt).toContain("Tests pass");
+    expect(prompt).toContain("no directory restriction");
+  });
+
   it("makes the current user message authoritative for response language", () => {
     const task = parseTaskSpec({ objective: "Fallback objective" });
     const chinese = formatTaskPrompt(task, "请修复 parser.ts 中的错误");

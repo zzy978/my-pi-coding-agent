@@ -127,3 +127,16 @@ npm run dev -- --revoke-candidate CANDIDATE_ID --approve
 ## 提交与拉取请求
 
 遵循 Conventional Commit 规范（`feat: ...`、`fix: ...`、`refactor: ...`、`test: ...`）。提交保持聚焦。拉取请求应说明意图与风险、列出已运行的验证命令（`npm run check`、`npm test`、`npm run lint`、`npm run build`）、关联相关 issue，并仅在 TUI 输出有变化时附终端截图。安全边界、会话格式或 manifest/schema 兼容性改动必须显式说明。
+
+## 路径策略更新（2026-09-07，覆盖上文旧路径限制描述）
+
+- 文件工具和策略扩展不再执行工作区包含性或 `allowedPaths` glob 限制；支持绝对路径、父目录、跨目录和跨目录符号链接。Shell 允许跨目录 `cd`。
+- `allowedPaths`、`allowed_paths`、`--allow` 保留旧输入兼容，但不再限制操作；`/allow` 仅提示已取消。验证器只对受保护文件变更执行拒绝审计，不再按白名单拒绝。
+- `.git`、`.env*`、`node_modules` 写保护、敏感读取保护、多硬链接写保护和危险命令审批继续生效。符号链接检查用于保护真实目标，不用于目录隔离。
+- 所有运行模式一致；worktree 不是文件系统隔离。报告仅覆盖启动仓库，不能证明目录外没有副作用。策略版本为 2，旧策略来源需重新记录后再做配对实验。
+
+## 命令策略诊断更新
+
+- 当前 `PROMPT_POLICY_VERSION` 为 3。`format-command.ts` 识别磁盘格式化调用位置，保留其拒绝规则，不再把普通 format 路径或变量当成命令。
+- `command-policy.ts` 为拒绝和审批规则返回稳定 `ruleId`；`command-diagnostics.ts` 统一返回脱敏原因和命令预览。`recorder.ts` 在 `tool_end.data.policyFailure` 记录可通过 `toolCallId` 关联的策略错误，不保存普通命令正文。
+- 修改时同时验证真正危险调用仍拒绝、普通格式化代码被接受、预览脱敏和长度边界、trace/result 无测试凭据泄漏。不能将命令扫描描述为完备沙箱。

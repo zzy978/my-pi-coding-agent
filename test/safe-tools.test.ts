@@ -2,7 +2,7 @@ import { link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertFilesystemContained, createApprovalGatedShellOperations, createSafeToolDefinitions } from "../src/policy/safe-tools.js";
+import { assertFilesystemPath, createApprovalGatedShellOperations, createSafeToolDefinitions } from "../src/policy/safe-tools.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -10,17 +10,17 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("filesystem containment", () => {
+describe("filesystem path protection", () => {
   it("accepts a new path below an existing workspace ancestor", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-agent-containment-"));
     temporaryDirectories.push(parent);
     const workspace = join(parent, "workspace");
     await mkdir(join(workspace, "src"), { recursive: true });
     const target = join(workspace, "src", "new", "index.ts");
-    await expect(assertFilesystemContained(workspace, target)).resolves.toBe(target);
+    await expect(assertFilesystemPath(workspace, target)).resolves.toBe(target);
   });
 
-  it("rejects a symbolic-link escape", async () => {
+  it("accepts a symbolic link to an external directory", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-agent-containment-"));
     temporaryDirectories.push(parent);
     const workspace = join(parent, "workspace");
@@ -28,16 +28,63 @@ describe("filesystem containment", () => {
     await Promise.all([mkdir(workspace), mkdir(outside)]);
     await writeFile(join(outside, "secret.txt"), "secret\n", "utf8");
     await symlink(outside, join(workspace, "link"), process.platform === "win32" ? "junction" : "dir");
-    await expect(assertFilesystemContained(workspace, join(workspace, "link", "secret.txt")))
-      .rejects.toThrow("symbolic link");
+    await expect(assertFilesystemPath(workspace, join(workspace, "link", "secret.txt")))
+      .resolves.toBe(join(workspace, "link", "secret.txt"));
+  });
+
+  it("reads, writes and edits outside the workspace without a whitelist", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-agent-external-"));
+    temporaryDirectories.push(parent);
+    const workspace = join(parent, "workspace");
+    await mkdir(workspace);
+    const tools = createSafeToolDefinitions(workspace);
+    const invoke = (name: string, input: Record<string, unknown>) => {
+      const tool = tools.find((item) => item.name === name);
+      if (!tool) throw new Error(name);
+      return tool.execute("call", input, undefined, undefined, {} as never);
+    };
+    const target = join(parent, "other", "new.txt");
+    await invoke("write", { path: target, content: "before\n" });
+    await invoke("edit", { path: "../other/new.txt", edits: [{ oldText: "before", newText: "after" }] });
+    expect(JSON.stringify(await invoke("read", { path: target }))).toContain("after");
+    expect(JSON.stringify(await invoke("ls", { path: "../other" }))).toContain("new.txt");
+    await expect(readFile(target, "utf8")).resolves.toBe("after\n");
+  });
+
+  it("protects external sensitive paths and symbolic-link targets", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-agent-protected-"));
+    temporaryDirectories.push(parent);
+    const workspace = join(parent, "workspace");
+    const protectedDirectory = join(parent, ".git");
+    await Promise.all([mkdir(workspace), mkdir(protectedDirectory)]);
+    await symlink(protectedDirectory, join(workspace, "link"), process.platform === "win32" ? "junction" : "dir");
+    await expect(assertFilesystemPath(workspace, join(parent, ".env"))).rejects.toThrow("protected");
+    await expect(assertFilesystemPath(workspace, join(workspace, "link", "new.txt"), true)).rejects.toThrow("not allowed");
+    await expect(assertFilesystemPath(workspace, join(parent, "node_modules", "new.txt"), true)).rejects.toThrow("not allowed");
   });
 
   it("includes shell by default and supports an explicit opt-out", () => {
     const shell = process.platform === "win32" ? "powershell" : "bash";
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"]).map((tool) => tool.name))
+    expect(createSafeToolDefinitions(process.cwd()).map((tool) => tool.name))
       .toEqual(["read", shell, "grep", "find", "ls", "edit", "write"]);
-    expect(createSafeToolDefinitions(process.cwd(), ["**/*"], false).map((tool) => tool.name))
+    expect(createSafeToolDefinitions(process.cwd(), false).map((tool) => tool.name))
       .toEqual(["read", "grep", "find", "ls", "edit", "write"]);
+  });
+
+  it("reports the matching rule and redacted command without executing it", async () => {
+    const exec = vi.fn(() => Promise.resolve({ exitCode: 0 }));
+    const operations = createApprovalGatedShellOperations({ exec }, () => Promise.resolve(false));
+    let message = "";
+    try {
+      await operations.exec('format D: --token "private value here"\u001b[31m', process.cwd(), { onData: vi.fn() });
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).toContain("disk-format");
+    expect(message).toContain("format D:");
+    expect(message).not.toContain("private value here");
+    expect(message).not.toContain("\u001b");
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it("runs ordinary commands but gates deletion before spawning a process", async () => {
@@ -72,7 +119,7 @@ describe("filesystem containment", () => {
     await writeFile(outside, "outside\n", "utf8");
     const inside = join(workspace, "inside.txt");
     await link(outside, inside);
-    const writeTool = createSafeToolDefinitions(workspace, ["**/*"]).find((tool) => tool.name === "write");
+    const writeTool = createSafeToolDefinitions(workspace).find((tool) => tool.name === "write");
     await expect(writeTool?.execute("call", { path: "inside.txt", content: "changed\n" }, undefined, undefined, {} as never))
       .rejects.toThrow("hard links");
     await expect(readFile(outside, "utf8")).resolves.toBe("outside\n");

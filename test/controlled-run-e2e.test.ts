@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent, SessionStats } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
+import { RunRecorder } from "../src/evaluation/recorder.js";
+import { createApprovalGatedShellOperations } from "../src/policy/safe-tools.js";
 import { executeControlledRun } from "../src/evaluation/runner.js";
 import { loadRunBundle } from "../src/evaluation/store.js";
 import type { ControlledPiRuntime } from "../src/runtime/controlled-pi-runtime.js";
@@ -73,6 +75,39 @@ function createFakeRuntime(workspace: string): ControlledPiRuntime {
 }
 
 describe("controlled run and replay lifecycle", () => {
+  it("persists a redacted policy failure correlated with the tool call", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-policy-trace-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const runtime = createFakeRuntime(workspace.workspace);
+    const task = parseTaskSpec({ objective: "record policy diagnostic" });
+    const recorder = await RunRecorder.create({ kind: "run", runtime, task, workspace, allowShell: true,
+      noSession: true, setup: { source: "disabled", commands: [] }, dataDirectory });
+    const command = 'format D: --token="private multiword credential"';
+    const operations = createApprovalGatedShellOperations({ exec: () => { throw new Error("must not execute"); } },
+      () => Promise.resolve(false));
+    let message = "";
+    try { await operations.exec(command, source, { onData: () => undefined }); }
+    catch (error) { message = error instanceof Error ? error.message : String(error); }
+    recorder.recordAgentEvent({ type: "tool_execution_start", toolCallId: "denied-1", toolName: "powershell", args: { command } } as AgentSessionEvent);
+    recorder.recordAgentEvent({ type: "tool_execution_end", toolCallId: "denied-1", toolName: "powershell", isError: true,
+      result: { content: [{ type: "text", text: message }] } } as AgentSessionEvent);
+    const run = await recorder.finalize({ runtime, diffSummary: "" });
+    const trace = await readFile(run.tracePath, "utf8");
+    const result = await readFile(run.resultPath, "utf8");
+    expect(trace).toContain('"policyFailure"');
+    expect(trace).toContain("denied-1");
+    for (const artifact of [trace, result]) {
+      expect(artifact).toContain("disk-format");
+      expect(artifact).toContain("format D:");
+      expect(artifact).not.toContain("private multiword credential");
+    }
+    await discardManagedWorkspace(workspace);
+  });
+
   it("records setup failures before the model is prompted", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-controlled-setup-failure-"));
     temporaryDirectories.push(parent);

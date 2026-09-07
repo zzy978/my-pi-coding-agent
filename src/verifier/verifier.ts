@@ -61,7 +61,7 @@ export async function runVerification(
   }
 
   const changedFiles = await listChangedFiles(workspace);
-  const disallowedChangedFiles = changedFiles.filter((file) => !isAllowedChangedPath(file, task.allowedPaths));
+  const disallowedChangedFiles = changedFiles.filter((file) => !isAllowedChangedPath(file));
   const configured = task.verify.length > 0;
   const commandsPassed = configured && commands.length === task.verify.length && commands.every((item) => item.status === "passed");
   return {

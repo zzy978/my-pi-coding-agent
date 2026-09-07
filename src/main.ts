@@ -28,7 +28,6 @@ Options:
       --verify <command>  Add a verification command (repeatable)
       --setup <command>   Run a setup command before the TUI starts (repeatable)
       --no-setup          Disable setup commands
-      --allow <glob>       Add an allowed changed-path glob (repeatable)
   -c, --continue          Continue the latest session for the source workspace
       --no-session        Do not persist the Pi session
       --no-shell          Disable the Shell tool (enabled by default)

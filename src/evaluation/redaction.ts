@@ -23,6 +23,25 @@ export function redactSensitiveText(value: string, env: NodeJS.ProcessEnv = proc
   return redacted;
 }
 
+/** For policy diagnostics only; ordinary command bodies remain omitted. */
+export function redactCommandPreview(command: string): string {
+  if (SENSITIVE_COMMAND.test(command)) return "[REDACTED SENSITIVE COMMAND]";
+  const withoutCredentials = command
+    .replace(/\b(?:Bearer|Basic)\s+[^\s"']+/gi, "[REDACTED_AUTH]")
+    .replace(/\b(?:https?|ftp):\/\/[^\s/@]+:[^\s/@]+@/gi, "https://[REDACTED]@")
+    .replace(/((?:api[_-]?key|token|secret|password|authorization|credential)["']?\s*(?:[:=]\s*|\s+))(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, "$1[REDACTED]");
+  let visible = "";
+  for (const character of redactSensitiveText(withoutCredentials)) {
+    const code = character.codePointAt(0) ?? 0;
+    const control = code < 0x20 || (code >= 0x7f && code <= 0x9f)
+      || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+    const rendered = control ? `\\u${code.toString(16).padStart(4, "0")}` : character;
+    if (visible.length + rendered.length > 1_200) return `${visible}…`;
+    visible += rendered;
+  }
+  return visible;
+}
+
 export function summarizeToolArguments(args: unknown): Record<string, unknown> {
   if (!args || typeof args !== "object" || Array.isArray(args)) return {};
   const summary: Record<string, unknown> = {};
