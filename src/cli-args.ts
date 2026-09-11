@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
+import type { ReviewMode } from "./experience/review.js";
 
 export type LearningOptions =
-  | { mode: "analyze"; runId: string }
+  | { mode: "analyze"; runId: string; reviewMode?: ReviewMode; minSuccessToolCalls?: number; force?: boolean }
   | { mode: "list-experiences" | "list-experiments" | "list-promotions" }
-  | { mode: "show-experience" | "show-experiment"; id: string }
+  | { mode: "show-experience" | "show-experiment" | "show-review-comparison"; id: string }
   | { mode: "experiment"; runId: string; candidateId: string; pairs: number }
   | { mode: "promote"; candidateId: string; evidenceIds: string[]; approved: boolean }
   | { mode: "revoke"; candidateId: string; approved: boolean };
@@ -75,6 +76,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   const evidenceIds: string[] = [];
   let approved = false;
   let explicitWorkspace = false;
+  let reviewMode: ReviewMode | undefined;
+  let minSuccessToolCalls: number | undefined;
+  let forceReview = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -148,6 +152,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         break;
       case "--analyze-run":
       case "--show-experience":
+      case "--show-review-comparison":
       case "--experiment":
       case "--show-experiment":
       case "--promote-candidate":
@@ -161,6 +166,24 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
           learningId = takeValue(args, index, arg);
           index += 1;
         }
+        break;
+      case "--review-mode": {
+        const value = takeValue(args, index, arg);
+        if (reviewMode !== undefined || !["proposer", "critic", "compare"].includes(value)) throw new CliUsageError("--review-mode must be proposer, critic or compare, specified once");
+        reviewMode = value as ReviewMode;
+        index += 1;
+        break;
+      }
+      case "--min-success-tool-calls": {
+        const value = takeValue(args, index, arg);
+        if (minSuccessToolCalls !== undefined || !/^\d+$/.test(value) || Number(value) > 10_000) throw new CliUsageError("--min-success-tool-calls must be between 0 and 10000, specified once");
+        minSuccessToolCalls = Number(value);
+        index += 1;
+        break;
+      }
+      case "--force-review":
+        if (forceReview) throw new CliUsageError("--force-review may only be specified once");
+        forceReview = true;
         break;
       case "--candidate":
         if (candidateId) throw new CliUsageError("--candidate may only be specified once");
@@ -227,6 +250,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     throw new CliUsageError("--approve requires --promote-candidate or --revoke-candidate");
   }
   let learning: LearningOptions | undefined;
+  if ((reviewMode !== undefined || minSuccessToolCalls !== undefined || forceReview) && learningFlag !== "--analyze-run") throw new CliUsageError("Review selection options require --analyze-run");
   if (learningFlag) {
     if (managementModes || record || doctor || task || taskFile || verifyCommands.length || setupCommands.length || noSetup ||
       allowedPaths.length || legacyInPlace || continueSession || noSession || shellExplicit) {
@@ -236,7 +260,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       throw new CliUsageError("This command restores its repository from recorded evidence; do not pass a workspace");
     }
     switch (learningFlag) {
-      case "--analyze-run": learning = { mode: "analyze", runId: learningId! }; break;
+      case "--analyze-run": learning = { mode: "analyze", runId: learningId!, ...(reviewMode ? { reviewMode } : {}),
+        ...(minSuccessToolCalls === undefined ? {} : { minSuccessToolCalls }), ...(forceReview ? { force: true } : {}) }; break;
+      case "--show-review-comparison": learning = { mode: "show-review-comparison", id: learningId! }; break;
       case "--show-experience": learning = { mode: "show-experience", id: learningId! }; break;
       case "--show-experiment": learning = { mode: "show-experiment", id: learningId! }; break;
       case "--list-experiences": learning = { mode: "list-experiences" }; break;
@@ -257,7 +283,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         break;
     }
   }
-  const learningInspection = learning && ["list-experiences", "show-experience", "list-experiments", "show-experiment", "list-promotions"].includes(learning.mode);
+  const learningInspection = learning && ["list-experiences", "show-experience", "show-review-comparison", "list-experiments", "show-experiment", "list-promotions"].includes(learning.mode);
   if (json && !(listRuns || showRunId || learningInspection)) {
     throw new CliUsageError("--json requires --list-runs, --show-run, or a read-only experience/experiment inspection");
   }

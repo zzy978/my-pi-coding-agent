@@ -5,6 +5,7 @@ import type { SessionStats } from "@earendil-works/pi-coding-agent";
 import { expect, it } from "vitest";
 import { executeControlledRun } from "../src/evaluation/runner.js";
 import { analyzeRun } from "../src/experience/service.js";
+import { compareReviewPipelines } from "../src/experience/review-comparison.js";
 import { loadCandidate, loadExperience } from "../src/experience/store.js";
 import { listActiveCandidates, listPromotions, promoteCandidate, revokeCandidate } from "../src/experience/promotions.js";
 import { runExperiment } from "../src/experiment/service.js";
@@ -28,6 +29,7 @@ it("closes the failure → grounded candidate → two-task evaluation → approv
       model: { provider: "fixture", id: "deterministic" }, thinkingLevel: "off", sessionId: stats.sessionId,
       getActiveToolNames: () => ["read", "write"], getSessionStats: () => structuredClone(stats), subscribe: () => () => undefined,
       abortCompaction: () => undefined, abort: () => Promise.resolve(),
+      abortRetry: () => undefined,
       prompt: async (text: string) => {
         prompts.push(text);
         if (text.includes("<experience-guidance")) await writeFile(join(workspace, outputPath), "done\n", "utf8");
@@ -56,7 +58,11 @@ it("closes the failure → grounded candidate → two-task evaluation → approv
     if (!original) throw new Error("Missing source run");
     expect(original.result.status).toBe("verification_failed");
     const originalResultText = await readFile(original.resultPath, "utf8");
-    const experience = await analyzeRun(original.manifest.runId, dataDirectory, { synthesize: (input) => {
+    const experience = await analyzeRun(original.manifest.runId, dataDirectory, { reviewMode: "compare",
+      review: () => Promise.resolve({ text: JSON.stringify({ decisions: [
+        { candidateIndex: 0, verdict: "accept", reason: "可核查的缺失文件证据", evidenceRefs: ["result.json#/verification/commands/0"] },
+        { candidateIndex: 1, verdict: "reject", reason: "审查认为缺少独立适用性证据", evidenceRefs: ["result.json#/status"] }
+      ] }), usage: { input: 4, output: 2, cacheRead: 0, cacheWrite: 0, total: 6, cost: 0.002 } }), synthesize: (input) => {
       expect(input.observation.category).toBe("verifier_failed");
       expect(input.evidence.some((evidence) => evidence.excerpt.includes("Missing requested output"))).toBe(true);
       return Promise.resolve({ text: JSON.stringify({
@@ -64,7 +70,9 @@ it("closes the failure → grounded candidate → two-task evaluation → approv
           hypotheses: [{ text: "The agent may have finished before writing the output", confidence: 0.7, evidenceRefs: ["result.json#/verification/commands/0"] }],
           lessons: ["Write and verify the requested file"], applicability: ["file generation"], contraindications: ["read-only tasks"] },
         candidates: [{ kind: "skill", title: "Verify requested files", content: "Before finishing, create the requested output and check its presence.",
-          applicability: ["file generation"], contraindications: ["read-only tasks"] }]
+          applicability: ["file generation"], contraindications: ["read-only tasks"] },
+        { kind: "strategy", title: "Review expected artifact", content: "Check that the requested artifact exists before concluding.",
+          applicability: ["file creation"], contraindications: ["read-only inspection"] }]
       }) });
     } });
     expect(experience.synthesis.status).toBe("completed");
@@ -80,6 +88,19 @@ it("closes the failure → grounded candidate → two-task evaluation → approv
       evidenceIds.push(experiment.id);
     }
     expect(prompts).toHaveLength(14);
+    const beforeRejectedEvaluation = await compareReviewPipelines(experience.id, dataDirectory);
+    expect(beforeRejectedEvaluation.proposer).toMatchObject({ candidates: 2, evaluatedCandidates: 1, improvedCandidates: 1 });
+    expect(beforeRejectedEvaluation.critic).toMatchObject({ candidates: 1, evaluatedCandidates: 1, improvedCandidates: 1 });
+    expect(beforeRejectedEvaluation.qualityComparisonAvailable).toBe(false);
+    const proposer = await loadExperience(experience.review!.proposerExperienceId!, dataDirectory);
+    const rejected = proposer.candidates[1]!;
+    await runExperiment({ sourceRunId: original.manifest.runId, candidate: rejected, dataDirectory }, { createRuntime });
+    const afterRejectedEvaluation = await compareReviewPipelines(experience.id, dataDirectory);
+    expect(afterRejectedEvaluation.qualityComparisonAvailable).toBe(true);
+    expect(afterRejectedEvaluation.proposals[1]).toMatchObject({ decision: "reject", assessment: "observed_improvement" });
+    expect(afterRejectedEvaluation.proposer.improvedCandidates).toBe(2);
+    expect(afterRejectedEvaluation.critic.improvedCandidates).toBe(1);
+    expect(afterRejectedEvaluation.criticCost).toBe(0.002);
     expect(await listActiveCandidates(source, dataDirectory)).toEqual([]);
     await expect(promoteCandidate({ candidateId: candidate.id, evidenceIds, approved: false, dataDirectory })).rejects.toThrow("人工确认");
     await promoteCandidate({ candidateId: candidate.id, evidenceIds, approved: true, dataDirectory });

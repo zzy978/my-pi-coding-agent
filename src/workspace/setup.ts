@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ProcessResult, RunProcessOptions } from "../runtime/process.js";
 import { runShellCommand } from "../runtime/process.js";
 import { redactSensitiveText } from "../evaluation/redaction.js";
+import { prepareCurrentWorkspace } from "./current-workspace.js";
 import {
   discardManagedWorkspace,
   listChangedFiles,
@@ -161,15 +162,14 @@ export async function prepareReadyWorkspace(
   }
 }
 
-export function prepareReadyCurrentWorkspace(
+export async function prepareReadyCurrentWorkspace(
   sourcePath: string,
   setupPreference: SetupPreference,
   onSetupCommand?: (command: string, index: number, total: number) => void
 ): Promise<ReadyWorkspace> {
-  return prepareReadyWorkspace(
-    sourcePath,
-    { inPlace: true },
-    setupPreference,
-    onSetupCommand
-  );
+  const workspace = await prepareCurrentWorkspace(sourcePath);
+  const setup = await runWorkspaceSetup(workspace, setupPreference, {
+    ...(onSetupCommand ? { onCommandStart: onSetupCommand } : {})
+  });
+  return { workspace, setup };
 }

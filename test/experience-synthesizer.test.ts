@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { synthesizeExperience, type SynthesisInput } from "../src/experience/synthesizer.js";
 
 type Model = ReturnType<ModelRuntime["getAvailableSnapshot"]>[number];
@@ -21,7 +21,25 @@ const input: SynthesisInput = {
   model: { provider: model.provider, id: model.id }, dataDirectory: resolve("isolated-data")
 };
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("isolated experience synthesis", () => {
+  it("uses independent synthesis limits and the source model despite a different default", async () => {
+    vi.stubEnv("PICODE_SYNTHESIS_TIMEOUT_MS", "2345");
+    vi.stubEnv("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", "123");
+    vi.stubEnv("PICODE_MODEL_PROVIDER", "other-provider");
+    vi.stubEnv("PICODE_MODEL_ID", "other-model");
+    const output = await synthesizeExperience(input, () => Promise.resolve({
+      getAvailableSnapshot: () => [model],
+      completeSimple: (selected, _context, options) => {
+        expect(selected.id).toBe("test-model");
+        expect(selected.maxTokens).toBe(123);
+        expect(options).toMatchObject({ timeoutMs: 2345, maxTokens: 123 });
+        return Promise.resolve(answer);
+      }
+    }));
+    expect(output.text).toBe('{"card":{}}');
+  });
   it("rejects oversized evidence before opening a model runtime", async () => {
     await expect(synthesizeExperience({ ...input, evidence: [{ ...input.evidence[0]!, excerpt: "x".repeat(70_000) }] }, () => Promise.resolve({
       getAvailableSnapshot: () => [model], completeSimple: () => Promise.resolve(answer)

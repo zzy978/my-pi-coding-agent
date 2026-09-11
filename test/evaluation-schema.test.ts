@@ -81,6 +81,25 @@ function result(runId = "run-one", status: RunResult["status"] = "verification_p
 }
 
 describe("evaluation artifact schemas", () => {
+  it("round-trips model limits, restores them for replay and rejects invalid snapshots", () => {
+    const original = manifest();
+    const modelConfig = { requestTimeoutMs: 4321, maxOutputTokens: 321, taskTimeoutMs: 9000, baseUrlSha256: "d".repeat(64) };
+    const recorded = parseRunManifest({ ...original, agent: { ...original.agent, modelConfig } });
+    expect(createReplayPlan(recorded).recordedModelConfig).toEqual(modelConfig);
+    for (const invalid of [{ ...modelConfig, requestTimeoutMs: 0 }, { ...modelConfig, maxOutputTokens: -1 }, { ...modelConfig, baseUrlSha256: "not-a-hash" }]) {
+      expect(() => parseRunManifest({ ...original, agent: { ...original.agent, modelConfig: invalid } })).toThrow();
+    }
+    const replay = manifest("run-two", "replay");
+    replay.agent.modelConfig = { ...modelConfig, maxOutputTokens: 999 };
+    const compared = compareRuns(recorded, result(), replay, result("run-two"));
+    expect(compared.status).toBe("not_comparable");
+  });
+  it("rejects interactive reports without Git audit as controlled evidence", () => {
+    const original = result();
+    expect(() => parseRunResult({ ...original, verification: { ...original.verification, changeAuditUnavailable: true } }))
+      .toThrow(/Git audit/);
+  });
+
   it("preserves frozen experimental replay metadata while leaving v1 unchanged", () => {
     const original = manifest();
     const experiment = {

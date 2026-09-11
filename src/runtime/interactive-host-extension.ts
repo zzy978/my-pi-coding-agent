@@ -95,7 +95,8 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             (command, index, total) => ctx.ui.setStatus(
               "pi-tui-verifier",
               `Verifying ${index + 1}/${total}: ${command}`
-            )
+            ),
+            { allowUnavailableGit: true }
           );
           const sessionFile = ctx.sessionManager.getSessionFile();
           const paths = await writeRunReport({
@@ -235,7 +236,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       pi.registerCommand("diff", {
         description: "Show Git changes for the selected workspace",
         handler: async (_args, ctx) => {
-          ctx.ui.notify(await getDiff(options.workspace.workspace), "info");
+          ctx.ui.notify(await getDiff(options.workspace.workspace, { allowUnavailableGit: true }), "info");
         }
       });
 

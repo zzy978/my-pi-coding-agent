@@ -3,6 +3,23 @@ import { parseCliArgs } from "../src/cli-args.js";
 import { helpText } from "../src/main.js";
 
 describe("experience command arguments", () => {
+  it("parses retrospective modes, selection overrides and read-only pipeline comparison", () => {
+    expect(parseCliArgs(["--analyze-run", "r", "--review-mode", "compare", "--min-success-tool-calls", "8", "--force-review"]).learning)
+      .toEqual({ mode: "analyze", runId: "r", reviewMode: "compare", minSuccessToolCalls: 8, force: true });
+    expect(parseCliArgs(["--show-review-comparison", "e", "--json"]).learning).toEqual({ mode: "show-review-comparison", id: "e" });
+  });
+
+  it.each([
+    ["--review-mode", "critic"], ["--min-success-tool-calls", "2"], ["--force-review"],
+    ["--analyze-run", "r", "--review-mode", "unknown"],
+    ["--analyze-run", "r", "--review-mode", "critic", "--review-mode", "compare"],
+    ["--analyze-run", "r", "--min-success-tool-calls", "-1"],
+    ["--analyze-run", "r", "--min-success-tool-calls", "10001"],
+    ["--analyze-run", "r", "--min-success-tool-calls", "1.5"],
+    ["--show-experience", "e", "--force-review"], ["--show-review-comparison", "e", "--review-mode", "critic"]
+  ])("rejects retrospective overrides in the wrong context %j", (...args) => {
+    expect(() => parseCliArgs(args)).toThrow();
+  });
   it("parses analysis and read-only inspections without an interactive task", () => {
     expect(parseCliArgs(["--analyze-run", "run-1"]).learning).toEqual({ mode: "analyze", runId: "run-1" });
     expect(parseCliArgs(["--show-experience", "exp-1", "--json"]).learning)

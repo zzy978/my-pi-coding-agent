@@ -1,5 +1,6 @@
 import type { VerificationReport } from "../verifier/verifier.js";
 import type { TaskSpec } from "../task/task-spec.js";
+import { modelSecrets } from "../model-config.js";
 
 const SECRET_NAME = /(api[_-]?key|token|secret|password|authorization|credential)/i;
 const SENSITIVE_COMMAND = /(?:^|[\s"'=:/\\])\.env(?:$|[\s"'./\\])|\b(?:printenv|Get-ChildItem\s+Env:|set)\b/i;
@@ -11,13 +12,17 @@ function escapeRegExp(value: string): string {
 
 export function redactSensitiveText(value: string, env: NodeJS.ProcessEnv = process.env): string {
   let redacted = value;
+  for (const secret of modelSecrets()) redacted = redacted.replaceAll(secret, "[REDACTED_MODEL_KEY]");
   for (const [name, secret] of Object.entries(env)) {
     if (!SECRET_NAME.test(name) || !secret || secret.length < 4) continue;
     redacted = redacted.replace(new RegExp(escapeRegExp(secret), "g"), `[REDACTED:${name}]`);
   }
   redacted = redacted
-    .replace(/\bBearer\s+[^\s"']+/gi, "Bearer [REDACTED]")
+    .replace(/(?<!\\)(["'])([^"'\\\r\n]*(?:api[_-]?key|token|secret|password|authorization|credential)[^"'\\\r\n]*)\1\s*:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/gi,
+      (_match, quote: string, key: string) => `${quote}${key}${quote}:"[REDACTED]"`)
+    .replace(/\b(Bearer|Basic)\s+[^\s"']+/gi, "$1 [REDACTED]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED_API_KEY]")
+    .replace(/\b(api[_-]?key|token|secret|password|authorization|credential)\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/gi, "$1=[REDACTED]")
     .replace(/\b(api[_-]?key|token|secret|password|authorization|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
     .replace(/^\s*[A-Za-z_][A-Za-z0-9_]*=.*$/gm, "[REDACTED_ENV_LINE]");
   return redacted;
@@ -63,8 +68,30 @@ export function summarizeToolArguments(args: unknown): Record<string, unknown> {
   return summary;
 }
 
+/** Bounded observable text only: never serialize arbitrary details, images or reasoning. */
+export function summarizeToolResult(result: unknown): string {
+  if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) return "";
+  const blocks: string[] = [];
+  let length = 0;
+  for (const block of result.content as unknown[]) {
+    if (!block || typeof block !== "object" || !("type" in block) || block.type !== "text" || !("text" in block) || typeof block.text !== "string") continue;
+    // Redact before truncation so a credential straddling the boundary cannot leak.
+    const redacted = redactSensitiveText(block.text);
+    const visible = Array.from(redacted).filter((character) => {
+      const code = character.codePointAt(0)!;
+      return !((code < 32 && code !== 9 && code !== 10 && code !== 13) || (code >= 127 && code <= 159) ||
+        (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069));
+    }).join("");
+    blocks.push(visible.slice(0, 1_000 - length));
+    length += blocks.at(-1)!.length + 1;
+    if (length >= 1_000) break;
+  }
+  return blocks.join("\n").slice(0, 1_000);
+}
+
 export function assertRecordableTask(task: TaskSpec): void {
   const serialized = JSON.stringify(task);
+  if (modelSecrets().some((secret) => serialized.includes(secret))) throw new Error("TaskSpec contains a configured model credential");
   for (const [name, secret] of Object.entries(process.env)) {
     if (SECRET_NAME.test(name) && secret && secret.length >= 8 && serialized.includes(secret)) {
       throw new Error(`TaskSpec contains the value of sensitive environment variable ${name}; use a variable reference instead`);
@@ -80,6 +107,9 @@ export function assertRecordableTask(task: TaskSpec): void {
 }
 
 export function assertRecordableCommands(commands: Array<{ command: string }>, label: string): void {
+  if (commands.some(({ command }) => modelSecrets().some((secret) => command.includes(secret)))) {
+    throw new Error(`${label} command contains a configured model credential`);
+  }
   const unsafeCommand = commands.find((item) => INLINE_SECRET.test(item.command));
   if (unsafeCommand) {
     throw new Error(`${label} command appears to contain an inline credential; use an environment-variable reference instead`);

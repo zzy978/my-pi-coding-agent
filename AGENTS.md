@@ -140,3 +140,30 @@ npm run dev -- --revoke-candidate CANDIDATE_ID --approve
 - 当前 `PROMPT_POLICY_VERSION` 为 3。`format-command.ts` 识别磁盘格式化调用位置，保留其拒绝规则，不再把普通 format 路径或变量当成命令。
 - `command-policy.ts` 为拒绝和审批规则返回稳定 `ruleId`；`command-diagnostics.ts` 统一返回脱敏原因和命令预览。`recorder.ts` 在 `tool_end.data.policyFailure` 记录可通过 `toolCallId` 关联的策略错误，不保存普通命令正文。
 - 修改时同时验证真正危险调用仍拒绝、普通格式化代码被接受、预览脱敏和长度边界、trace/result 无测试凭据泄漏。不能将命令扫描描述为完备沙箱。
+
+## 普通目录交互更新（2026-09-08，覆盖上文 Git 前置与会话归组描述）
+
+- 全局 `picode` 与 `pi-agent-tui` 共用入口。普通交互经 `prepareReadyCurrentWorkspace` → `prepareCurrentWorkspace`，只要求目标为存在的目录；支持非 Git 目录、无提交仓库和仓库子目录，不自动初始化 Git。
+- `workspace.workspace` 始终保留启动目录；Git 可用时 `sourceRoot` 为仓库根目录，否则为启动目录并设置 `gitUnavailable: true`。交互模式缺少提交时 `baselineCommit` 为空字符串，不伪造提交。受控 `prepareWorkspace` 仍严格要求 Git 和有效提交。
+- 交互会话按 `workspace.workspace` 归组，父子目录相互独立；原仓库根目录会话不迁移，继续从原根目录恢复。工具、setup 和验证命令使用实际工作目录，Git 变更审计与 `/diff` 文件列表使用整个仓库的根目录相对路径。
+- 只有交互宿主显式开启 `allowUnavailableGit`：Git 审计失败时仍保存命令结果与报告，设置 `changeAuditUnavailable: true`、`success: false`；空文件数组此时代表未知，不能描述为零变更或无受保护文件变更。受控验证仍遇审计失败即拒绝。
+- `--doctor` 按普通交互的可用性检查；Git 不可用只是可选能力缺失。非 Git 目录不加载仓库晋升候选。文件写保护和危险命令审批保持生效。
+
+## 模型环境配置更新（2026-09-08）
+
+- `src/model-config.ts` 统一读取安装目录 `.env`，系统环境变量 `PICODE_ENV_FILE` 可指定路径；同名系统变量优先。`src/runtime/model-configuration.ts` 接入交互、受控运行和 doctor，经验提炼共享认证/地址配置并使用独立上限。
+- `.env`、`.env.*` 忽略 Git，仅 `.env.example` 作为公开模板例外。模型密钥只进入内存运行时和脱敏注册表，不自动注入 `process.env` 或回写 Pi 认证文件。不能打印完整配置对象。
+- `PICODE_MODEL_REQUEST_TIMEOUT_MS`、`PICODE_MODEL_MAX_OUTPUT_TOKENS` 与 `PICODE_MODEL_TASK_TIMEOUT_MS` 分别控制单次请求、单次输出和代理任务阶段；`PICODE_SYNTHESIS_*` 控制经验提炼。不宣称单次输出上限等于整个任务累计预算。
+- manifest 的可选 `agent.modelConfig` 保存三个上限及地址指纹，重放恢复上限并校验地址/能力，实验与比较校验快照；无快照旧证据需重新记录。凭据始终从当前机器配置获得，不写入 manifest。
+- `PROMPT_POLICY_VERSION` 现为 `4`。只有最终路径组件精确为 `.env.example` 时允许模板读写；受保护祖先、链接真实目标和多硬链接保护仍生效。
+- Vitest 的 `test/helpers/model-env.ts` 将配置指向公开模板并清除本机模型覆盖项，避免测试加载用户真实密钥。新增测试应使用隔离配置、本机模拟 HTTP 服务和假密钥；验证真实请求参数与取消行为，不调用付费模型。
+
+## 成功与失败复盘更新（2026-09-08，覆盖上文仅失败提炼描述）
+
+- `classifyRun` 统一筛选成功/失败；默认成功调用阈值 6，可通过 `--min-success-tool-calls` 配置（0–10000）。有证据的工具失败后成功动作可绕过低调用筛选。`--force-review` 只影响低调用筛选，不能绕过验证器、完成状态、setup 或成功动作证据门槛。
+- `--analyze-run` 默认 proposer；`--review-mode critic` 追加一次独立无工具审查；`compare` 保存同一 proposer 输出的两个经验产物，返回 critic 产物 ID。`--show-review-comparison ID [--json]` 为只读，不调用模型。
+- 新经验 schemaVersion=2，兼容旧版读取。允许零候选并保存 noCandidateReason；不能要求模型为了凑数而生成经验。critic 只接受/拒绝原提案；解析、引用或请求错误必须保留审查状态与已知 usage，并禁止候选放行。
+- `review.ts` 管理审查输入/决策及提案绑定；`review-comparison.ts` 验证 proposer 产物和来源 run，读取并核验实验，比较筛选前后同批候选。缺失实验与费用显示未知；拒绝率不能当有效率，回顾性可避免费用不等于实际节省。
+- 记录器保留最多 1000 字符的脱敏工具文本摘要，排除图片、任意 details 和模型思维链；经验材料仍限制 80 条/32000 字符，优先保留验证与失败恢复。旧 trace 没有记录的动作结果不可推测。
+- 现有实验/晋升门槛不变：计费、token、耗时虽可查看，但效率变化不单独触发 observed_improvement。对同批候选共享实验结果的比较不能改变晋升对候选 ID 和跨任务证据的要求。
+- 本阶段没有常驻后台队列、自动 TUI 订阅、自动经验注入或 skill 安装。复盘入口可由外部后台调用；重复分析产生新记录。真实模型收益需额外的真实实验，不得用模拟测试证明 critic 有效。

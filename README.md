@@ -7,8 +7,8 @@
 - 使用 Pi 官方完整交互界面，包括模型与登录管理、会话树、分叉、压缩、导入导出、分享、设置、主题和快捷键。
 - 自动发现 Pi Extensions、Skills、Prompt Templates、Themes 和项目上下文文件，并支持 `/reload`。
 - 从自然语言或 YAML/JSON `TaskSpec` 接收任务。
-- 直接在当前 Git 检出目录中执行交互任务，不额外创建 worktree 或分支。
-- 文件工具支持绝对路径、`../` 和跨目录符号链接，不再限制在启动目录，也不执行 `allowedPaths` 白名单；`.git`、`.env*` 和 `node_modules` 仍禁止写入。
+- 在终端当前目录或指定目录中执行交互任务，支持普通目录、无提交仓库和仓库子目录，不额外创建 Git 仓库、worktree 或分支。
+- 文件工具支持绝对路径、`../` 和跨目录符号链接，不再限制在启动目录，也不执行 `allowedPaths` 白名单；`.git`、`.env*` 和 `node_modules` 仍禁止写入，公开模板 `.env.example` 除外（受保护目录中的同名文件仍受保护）。
 - 在每轮模型执行后运行确定性的验证命令。
 - 把任务、变更文件、验证输出和模型/会话信息写入 JSON 与 Markdown 报告。
 - 在 TUI 内新建持久会话、切换同一源仓库的已记录历史会话，或使用不落盘的临时会话。
@@ -18,16 +18,46 @@
 ## 环境要求
 
 - Node.js 22.19.0 或更高版本，推荐 Node.js 24 LTS。
-- Git。
+- Git 为交互模式的可选依赖；Git 变更审计、record/replay 和配对实验需要 Git。
 - 至少一个已在 Pi 中配置的模型。
 
-先安装并登录 Pi：
+可以通过下面的 `.env` 配置 API 密钥，也可以使用 Pi 的登录认证：
 
 ```bash
 npx @earendil-works/pi-coding-agent
 ```
 
 在 Pi 中执行 `/login`，完成模型提供商认证。
+
+## 模型配置
+
+在应用安装目录将 `.env.example` 复制为 `.env`，填写 provider、模型 ID、密钥和服务地址。本地开发或 `npm link` 安装时，默认文件为 `D:\Agent\.env`；从其他项目启动 `picode` 仍读取这个文件。已有 `.env` 时不要覆盖。
+
+```powershell
+if (-not (Test-Path -LiteralPath D:\Agent\.env)) {
+  Copy-Item D:\Agent\.env.example D:\Agent\.env
+}
+```
+
+`.env` 已被 Git 忽略，`.env.example` 可提交且只包含空密钥、默认值和说明。修改配置后重启 `picode`，不需要重新构建。模型必须是 Pi 已知模型，或先在应用数据目录的 `agent/models.json` 中注册；仅填写一个未知模型名称不会自动定义其协议和能力。
+
+| 参数 | 含义与默认值 |
+| --- | --- |
+| `PICODE_MODEL_PROVIDER` | 提供商，如 `deepseek`；留空保留 Pi 模型选择 |
+| `PICODE_MODEL_ID` | 默认模型，如 `deepseek-v4-flash`；填写时必须指定 provider |
+| `PICODE_MODEL_API_KEY` | API 密钥；留空使用已有 Pi 认证 |
+| `PICODE_MODEL_BASE_URL` | 可选 HTTP(S) API 根地址；不得含用户名、密码、查询参数或片段 |
+| `PICODE_MODEL_REQUEST_TIMEOUT_MS` | 单次模型请求的墙钟上限，包含该请求内部重试；默认 `120000` 毫秒 |
+| `PICODE_MODEL_MAX_OUTPUT_TOKENS` | 单次输出上限，默认 `16384`；包含共享输出预算的思考 token，实际值还受模型能力和剩余上下文约束 |
+| `PICODE_MODEL_TASK_TIMEOUT_MS` | 一轮代理任务的总时限，包含多次请求与工具执行；默认 `0`，不设置额外总时限 |
+| `PICODE_SYNTHESIS_TIMEOUT_MS` | 经验提炼全过程时限，默认 `120000` 毫秒 |
+| `PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS` | 经验提炼输出上限，默认 `16000` |
+
+普通运行中，同名系统环境变量优先于 `.env`；未填写的参数使用上述默认值或已有 Pi 配置。可通过系统环境变量 `PICODE_ENV_FILE` 指定其他配置文件。`.env` 中的模型密钥只加载到内存中的模型运行时，不自动写回 `auth.json` 或导出给 Shell；系统环境变量原本已有的密钥仍会被子进程继承。`.env` 是明文文件，Git 忽略和工具保护不是操作系统沙箱。
+
+交互、受控运行和 `--doctor` 使用同一个配置入口；经验提炼使用同样的认证/地址配置，但坚持使用来源记录中的模型和独立的提炼上限。任务总时限通过取消信号停止执行，不包含 setup 和后续验证，也不能保证强制终止不响应取消的第三方扩展。输出上限是单次调用上限，不是整个任务累计 token 预算。
+
+新记录在 manifest 中保存请求上限、输出上限、任务总时限和模型服务地址的 SHA-256 指纹，不保存密钥。重放与配对实验恢复记录的上限，当前服务地址变化或模型无法满足记录的输出上限时拒绝提交模型任务；配对实验自身的时限继续生效，多个总时限取较短者。旧记录仍可查看和重放，但缺少新配置快照的旧记录不能与新运行判定为配置一致，需重新记录后再做配对实验。文件策略版本现为 `4`。
 
 ## 安装与运行
 
@@ -47,11 +77,26 @@ npm run dev -- /path/to/repository
 
 Windows PowerShell 示例：
 
+在 `D:\Agent` 完成一次构建和全局链接后，即可从其他项目目录使用 `picode`：
+
+```powershell
+cd D:\Agent
+npm run build
+npm link
+
+cd D:\projects\my-repo
+picode
+```
+
+`picode` 与 `pi-agent-tui` 指向同一个入口；省略路径时使用终端当前目录，支持非 Git 目录和尚无提交的仓库。从仓库子目录启动时，工作区保持为该子目录。也可以运行 `picode --doctor` 检查当前目录，或使用 `picode D:\projects\my-repo` 指定目录。全局链接保留后，日常启动只需输入 `picode`；修改 Agent 源码后在 `D:\Agent` 重新运行 `npm run build` 即可更新。
+
 ```powershell
 npm run dev -- D:\projects\my-repo --task "修复解析器并补充回归测试" --verify "npm test"
 ```
 
-交互式 TUI 直接在指定仓库的当前检出目录中工作，允许保留已有的未提交变更，不会创建 `agent/*` 分支或额外 worktree。持久会话按仓库根目录归组，因此 `--continue` 和 TUI 内的 `/sessions` 会在同一个当前检出目录中恢复对话上下文。
+交互式 TUI 直接在指定目录中工作，保留已有文件和未提交变更，不会自动执行 `git init` 或创建分支、worktree。持久会话按实际工作目录归组；父目录与子目录分别保存会话，`--continue` 和 `/sessions` 只恢复当前目录的会话。此前从仓库根目录创建的会话仍可在仓库根目录恢复。
+
+Git 可用时，验证命令在当前工作目录执行，变更审计覆盖整个所属仓库，文件列表中的路径相对于仓库根目录。Git 不可用时，文件工具、会话和验证命令仍可使用；`/diff` 会提示不可用，报告明确标记变更文件与受保护文件状态未知。即使验证命令全部通过，缺少变更审计的运行仍标记为不完整，不会宣称完整验证成功。record/replay 和配对实验仍要求已有提交的 Git 仓库。
 
 会话恢复只恢复模型的对话上下文，并继续在当前检出目录中工作；它不会自动切换到会话曾使用的旧分支，也不会还原当时尚未提交的文件状态。
 
@@ -118,7 +163,7 @@ comparison.json/.md（回放）原始运行与回放的对比报告
 
 `verification_passed` 表示新运行独立通过 verifier 和路径审计，不表示模型文本或工具顺序逐字一致。可用 `--list-runs --json` 或 `--show-run <runId> --json` 获取机器可读输出。
 
-## 失败经验与候选实验
+## 运行复盘与候选实验
 
 没有现成评测任务时，可接入 Exercism JavaScript 的全部 9 道官方困难题（8–9 分）：
 
@@ -128,11 +173,11 @@ npm run benchmark:exercism -- D:\exercism-js-hard-v1
 
 目标目录必须尚不存在。工具准备独立 Git 题库、锁定依赖、逐题 TaskSpec，并实际校验骨架失败和参考实现全通过；所有跳过测试启用，参考答案不进入题库或 Git 历史。此步骤不调用模型。已有题库无需重复准备；真实 record、经验分析与配对实验见[困难题库使用指南](docs/exercism-hard-benchmark.md)。
 
-此功能把“失败记录 → 经验候选 → 新鲜对照实验 → 人工晋升 → 按需使用”串成闭环。候选是指导文本，不会自动改写程序、安装全局 Skill，或改变工具权限与验证器。Skill 候选是过程性 Markdown，不是可执行插件。
+此功能把“成功或失败记录 → 筛选与复盘材料 → 经验候选 → 可选 critic 审查 → 新鲜对照实验 → 人工晋升 → 按需使用”串成闭环。候选是指导文本，不会自动改写程序、安装全局 Skill，或改变工具权限与验证器。Skill 候选是过程性 Markdown，不是可执行插件。
 
 经验生成结果保留统一 JSON 结构，候选的 `content` 正文使用 Markdown。输入兼容纯 JSON，以及包住整个响应的三反引号代码围栏（`json` 标签，不区分大小写，或不带语言标签）。围栏之外不能附加解释，也不接受多个响应块、YAML 或自由文本；解包后仍严格校验字段、证据引用、内容长度和敏感信息。此兼容只处理外层包装，不修复损坏或截断的 JSON。已有失败记录不会自动重写，需要重新执行 `--analyze-run` 生成新记录。
 
-先选一个**配置了验证器**的失败 run，再提炼：
+先选一个**配置了验证器**的已记录 run，再提炼：
 
 ```powershell
 pi-agent-tui --list-runs
@@ -143,7 +188,27 @@ pi-agent-tui --show-experience EXPERIENCE_ID
 
 将示例中的大写 ID 替换为实际 ID。分析会区分程序判定的失败事实与模型提出的原因假设，保存证据引用、适用条件、不适用条件、候选哈希和生成成本。模型生成使用来源 run 的模型配置，但以独立、无工具的请求运行；只发送有上限的脱敏评测证据，不读取原生会话内容。模型不可用、超时或返回格式不合格时保留观察记录，生成状态为 `failed`，不会伪造候选。
 
-没有验证器、运行不完整或 setup 失败时不会生成编码策略；成功运行会被忽略。没有验证器的旧 run 应重新录制并添加 `--verify`，直接重放不会补出缺失的验证标准。历史 trace 缺少错误细节时，系统只报告证据限制，不猜测未记录的代码过程。
+没有验证器、运行不完整或 setup 失败时不会生成编码策略。成功 run 默认要求至少 6 次工具调用；有可核查的工具失败后成功动作时，即使调用较少也可复盘。阈值是节约成本的启发式，不代表复杂度或经验价值；成功还必须有一致的验证结果、关联的工具动作和结果摘要。没有验证器的旧 run 应重新录制并添加 `--verify`，直接重放不会补出缺失的验证标准。历史 trace 缺少动作摘要时，不根据调用数猜测成功原因。
+
+```powershell
+pi-agent-tui --analyze-run RUN_ID --min-success-tool-calls 8
+pi-agent-tui --analyze-run RUN_ID --force-review
+pi-agent-tui --analyze-run RUN_ID --review-mode critic
+pi-agent-tui --analyze-run RUN_ID --review-mode compare
+pi-agent-tui --show-review-comparison CRITIC_EXPERIENCE_ID --json
+```
+
+`--min-success-tool-calls` 范围为 0–10000。`--force-review` 仅绕过低调用筛选，不绕过验证器、运行完成、setup 和动作证据要求。这两个选项及 `--review-mode` 仅用于 `--analyze-run`。
+
+默认 `proposer` 模式最多调用一次提炼模型。`critic` 在结构与引用检查通过且存在候选时，追加一次独立上下文、无工具的模型审查；逐项检查依据、适用条件、因果过度归因、答案记忆和规则绕过，只接受或拒绝原提案，不改写提案。审查失败会保留提案、错误和已知费用，但不放行候选。模型可以返回 `{"candidates":[],"noCandidateReason":"没有足够的可复用证据"}`；这是正常完成，不是错误，也不会继续调用 critic。
+
+`compare` 复用**同一批 proposer 提案**，保存 proposer 经验以及绑定其 ID/哈希的 critic 经验。用返回的 critic 经验 ID 查看比较。报告列出过滤前后候选数量、已评测候选、观察到的改善/退化、未评测项和两次生成的计费估计。接受的提案内容不变，比较可以共享该内容在两个候选 ID 下的已核验实验；这不改变晋升对候选 ID 和跨任务证据的绑定。
+
+要判断 critic 是否误拒，需使用 proposer 经验里被拒候选的 ID 显式发起 `--experiment`。未评测或无法核验的证据会使比较保持不完整；拒绝率不等于有效率。回顾性可避免评测费用仅统计被拒候选已记录的实验费用，并不表示本次实际省下了这些费用。当前改善判定仍以配对通过/失败为主，单纯减少 token、工具调用或耗时不会获得改善或晋升资格。
+
+新经验产物为 v2，旧 v1 仍可读取。新录制的工具结果只保留最多 1000 字符的脱敏文本摘要，不保留图片、任意 details 或思维链；复盘材料包含运行用量和耗时，继续限制为 80 条、32000 字符，并优先保留验证诊断和失败恢复片段。现有 `diffSummary` 仅为变更统计和文件列表，不是完整代码补丁。截断与缺失都会限制可提出的结论。
+
+这些命令无需 TTY，可由外部后台作业调用；当前不会自动订阅普通 TUI、创建常驻复盘队列或自动启动付费评测。重复手动分析会创建新的不可变记录，不覆盖历史。普通 TUI 报告不等于可回放 run；请先用 `--record` 获取受控证据。
 
 查看候选后，先做小规模探索，或使用默认 3 对实验：
 
@@ -201,10 +266,10 @@ pi-agent-tui --revoke-candidate CANDIDATE_ID --approve
 | `/verify-add <命令>` | 增加验证命令 |
 | `/run` | 执行当前任务目标 |
 | `/temp` | 新建关闭后自动删除的临时会话 |
-| `/sessions` | 打开选择器并切换会话（Switch session） |
+| `/sessions` | 打开选择器并切换当前工作目录的会话 |
 | `/sessions <session-id>` | 按完整 ID 或唯一 ID 前缀切换会话 |
-| `/verify` | 仅运行验证器 |
-| `/diff` | 查看变更文件和 diff 统计 |
+| `/verify` | 执行验证命令并生成报告；Git 不可用时标记变更审计缺失 |
+| `/diff` | 查看所属仓库的变更文件和 diff 统计；Git 不可用时提示原因 |
 | `/status` | 查看宿主任务、工作区、模型与会话；用量使用 Pi 的 `/session` 查看 |
 | `/experience [list \| use <ID> \| off]` | 列出、选择或停用本仓库已晋升的经验候选 |
 
@@ -212,14 +277,14 @@ Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保
 
 ## 数据位置
 
-会话内容仍使用 Pi 的 JSONL 格式；本项目按源仓库路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。
+会话内容仍使用 Pi 的 JSONL 格式；本项目按实际工作目录路径建立稳定的会话目录，并原子记录 session ID，使尚未产生首条模型回复的空会话也可被发现。已物化会话的内容和 ID 仍以 JSONL 为事实源；同一持久会话同时被另一个进程占用时会拒绝打开，避免并发追加损坏上下文。
 
 所有应用运行期数据默认集中在项目根目录的 `.picoding/` 中：
 
 ```text
 .picoding/
 ├── runs/       受控评测、回放及其证据
-├── experiences/ 失败观察、经验卡和不可变候选
+├── experiences/ 运行复盘、经验卡、审查记录和不可变候选
 ├── experiments/ 新鲜配对实验、各臂引用及成本对比
 ├── promotions/ 人工晋升、撤销历史与完整性 head
 ├── worktree/   受控运行创建的 Git 工作树
@@ -254,11 +319,12 @@ npm run build
 - `src/runtime/interactive-host-extension.ts`：TaskSpec、验证、报告和项目会话命令。
 - `src/runtime/controlled-pi-runtime.ts`：record/replay 使用的受控无界面运行时。
 - `src/policy/`：路径和命令护栏。
-- `src/workspace/git.ts`：当前检出目录解析，以及受控记录/回放使用的 worktree 生命周期。
+- `src/workspace/current-workspace.ts`：保留实际工作目录的交互启动，Git 信息可选。
+- `src/workspace/git.ts`：Git 变更审计，以及受控记录/回放使用的 worktree 生命周期。
 - `src/verifier/verifier.ts`：确定性验证。
 - `src/report/report.ts`：运行证据报告。
 - `src/evaluation/`：受控运行、manifest、Trace、回放与对比。
-- `src/experience/`：失败分类、证据提炼、候选生成与人工晋升。
+- `src/experience/`：成功/失败筛选、证据提炼、候选生成、critic 审查、同批提案比较与人工晋升。
 - `src/experiment/`：配对运行、配置隔离检查与结果比较。
 
 ## License
@@ -276,3 +342,7 @@ MIT
 被拒绝的 Shell 调用返回规则 ID、拒绝原因和脱敏命令预览；受控运行在 `trace.jsonl` 的 `tool_end.data.policyFailure` 保存这些信息，通过同一条记录的 `toolCallId` 关联调用。预览最长约 1200 字符，凭据与终端控制字符经过处理；涉及环境变量枚举或 `.env` 的命令整体隐藏。普通命令正文和工具输出仍不记录。脱敏为尽力识别，不能保证识别任意自定义秘密格式。
 
 `format` 按调用位置识别，普通路径（如 `tests/format/`）和源码变量不再触发磁盘格式化拒绝。识别覆盖直接调用和常见 Shell/进程包装，不是完整解释器或沙箱。此变更将运行策略版本提升为 3；旧策略实验不能视为同配置结果。
+
+### 实验模型阶段预算
+
+内部 `runExperiment()` API 支持 `promptTimeoutMs`（1–3,600,000 毫秒，默认 900,000）。例如 `promptTimeoutMs: 45 * 60 * 1000` 将每个对照臂和候选臂都设为 45 分钟。预算包括模型生成及其工具调用，不包括模型返回后的宿主最终验证。新实验保存统一预算，各臂和回放记录相同值；缺少该字段的旧实验仍按历史 15 分钟解释，读取时不补写字段或改变哈希。当前 CLI 未增加对应选项。

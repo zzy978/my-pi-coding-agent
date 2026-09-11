@@ -10,6 +10,8 @@ export interface WorkspaceInfo {
   branch: string;
   managedWorktree: boolean;
   baselineCommit: string;
+  /** 普通目录或 Git 无法读取时为 true；受控运行不会设置此字段。 */
+  gitUnavailable?: boolean;
 }
 
 export class WorkspaceError extends Error {
@@ -49,9 +51,21 @@ export async function resolveCommit(cwd: string, revision = "HEAD"): Promise<str
 }
 
 export async function listChangedFiles(cwd: string): Promise<string[]> {
+  const root = await resolveGitRoot(cwd);
+  const head = await git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  if (head.exitCode !== 0) {
+    // 只有指向尚不存在分支的 HEAD 才能按无提交仓库审计，损坏的 HEAD 仍拒绝。
+    const symbolic = await git(root, ["symbolic-ref", "-q", "HEAD"]);
+    const ref = symbolic.stdout.trim();
+    if (symbolic.exitCode !== 0 || !ref.startsWith("refs/heads/")) {
+      throw new WorkspaceError("Unable to inspect repository HEAD");
+    }
+    const exists = await git(root, ["show-ref", "--verify", "--quiet", ref]);
+    if (exists.exitCode !== 1) throw new WorkspaceError("Unable to inspect repository HEAD");
+  }
   const [tracked, untracked] = await Promise.all([
-    git(cwd, ["diff", "--name-status", "-z", "--find-renames", "HEAD"]),
-    git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])
+    git(root, ["diff", "--no-ext-diff", "--name-status", "-z", "--find-renames", ...(head.exitCode === 0 ? ["HEAD"] : ["--cached"])]),
+    git(root, ["ls-files", "--others", "--exclude-standard", "-z"])
   ]);
   if (tracked.exitCode !== 0 || untracked.exitCode !== 0 || tracked.stdoutTruncated || untracked.stdoutTruncated) {
     throw new WorkspaceError("Unable to inspect changed files");
@@ -109,8 +123,18 @@ export async function prepareWorkspace(sourcePath: string, options: {
   return { sourceRoot, workspace, branch, managedWorktree: true, baselineCommit };
 }
 
-export async function getDiff(cwd: string): Promise<string> {
-  const result = await git(cwd, ["diff", "--no-ext-diff", "--stat", "--", "."]);
+export async function getDiff(cwd: string, options?: { allowUnavailableGit?: boolean }): Promise<string> {
+  try {
+    return await readDiff(cwd);
+  } catch (error) {
+    if (!options?.allowUnavailableGit) throw error;
+    return "Git 变更审计不可用，无法显示差异。当前目录仍可正常使用文件工具和验证命令。";
+  }
+}
+
+async function readDiff(cwd: string): Promise<string> {
+  const root = await resolveGitRoot(cwd);
+  const result = await git(root, ["diff", "--no-ext-diff", "--stat", "--", "."]);
   if (result.exitCode !== 0) throw new WorkspaceError(result.stderr.trim() || "Unable to read Git diff");
   const changed = await listChangedFiles(cwd);
   return `${result.stdout.trim()}${changed.length ? `\n\nChanged files:\n${changed.map((file) => `- ${file}`).join("\n")}` : "\n\nNo changed files."}`.trim();

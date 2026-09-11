@@ -61,11 +61,11 @@ ${codeBlock(item.stderr.slice(0, 20_000))}`).join("\n\n");
 
 ## Changed files
 
-${verification.changedFiles.length ? verification.changedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "No changed files."}
+${verification.changeAuditUnavailable ? "Git 变更审计不可用，变更文件未知。" : verification.changedFiles.length ? verification.changedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "No changed files."}
 
 ## Disallowed changes
 
-${verification.disallowedChangedFiles.length ? verification.disallowedChangedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "None."}
+${verification.changeAuditUnavailable ? "Git 变更审计不可用，无法确认是否存在受保护文件变更。" : verification.disallowedChangedFiles.length ? verification.disallowedChangedFiles.map((file) => `- ${inlineCode(file)}`).join("\n") : "None."}
 
 ## Verification
 

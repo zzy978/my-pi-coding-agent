@@ -31,7 +31,9 @@ export interface ControlledRunResult extends FinalizedRun {
 
 async function promptControlled(options: ControlledRunOptions, prompt: string): Promise<void> {
   options.signal?.throwIfAborted();
-  const timeoutMs = options.experiment ? options.experiment.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS : undefined;
+  const taskTimeout = options.runtime.modelConfig?.taskTimeoutMs || undefined;
+  const experimentTimeout = options.experiment ? options.experiment.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS : undefined;
+  const timeoutMs = taskTimeout && experimentTimeout ? Math.min(taskTimeout, experimentTimeout) : taskTimeout ?? experimentTimeout;
   if (!options.signal && timeoutMs === undefined) {
     await options.runtime.session.prompt(prompt);
     return;
@@ -40,6 +42,7 @@ async function promptControlled(options: ControlledRunOptions, prompt: string): 
   let abortPromise: Promise<void> | undefined;
   const abort = (): void => {
     cancelled = true;
+    options.runtime.session.abortRetry();
     options.runtime.session.abortCompaction();
     abortPromise ??= options.runtime.session.abort().catch(() => undefined);
   };
@@ -48,7 +51,7 @@ async function promptControlled(options: ControlledRunOptions, prompt: string): 
   timer?.unref();
   try {
     await options.runtime.session.prompt(prompt);
-    if (cancelled) throw new Error(options.signal?.aborted ? "Experiment aborted" : "Experiment model phase timed out");
+    if (cancelled) throw new Error(options.signal?.aborted ? "Experiment aborted" : "Model task phase timed out");
   } finally {
     if (timer) clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);

@@ -27,12 +27,20 @@ export function relativePathWithin(workspace: string, filePath: string): string 
 
 export function isProtectedPath(relativePath: string): boolean {
   const normalized = normalizeRelativePath(relativePath);
-  return ALWAYS_PROTECTED.some((pattern) => minimatch(normalized, pattern, MATCH_OPTIONS));
+  return matchesProtectedComponents(normalized, ALWAYS_PROTECTED);
 }
 
 export function isSensitiveReadPath(relativePath: string): boolean {
   const normalized = normalizeRelativePath(relativePath);
-  return SENSITIVE_READ_PATHS.some((pattern) => minimatch(normalized, pattern, MATCH_OPTIONS));
+  return matchesProtectedComponents(normalized, SENSITIVE_READ_PATHS);
+}
+
+function matchesProtectedComponents(path: string, patterns: string[]): boolean {
+  const components = path.split("/");
+  return components.some((component, index) => {
+    if (index === components.length - 1 && (MATCH_OPTIONS.nocase ? component.toLowerCase() : component) === ".env.example") return false;
+    return patterns.some((pattern) => minimatch(component, pattern, MATCH_OPTIONS));
+  });
 }
 
 export function isAllowedChangedPath(relativePath: string): boolean {

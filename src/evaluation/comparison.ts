@@ -14,6 +14,7 @@ function setupConfiguration(manifest: RunManifest): { source: string; commands: 
 function configurationDifferences(original: RunManifest, replay: RunManifest): string[] {
   const differences: string[] = [];
   if (!equalJson(original.agent.model, replay.agent.model)) differences.push("model");
+  if (!equalJson(original.agent.modelConfig ?? null, replay.agent.modelConfig ?? null)) differences.push("modelConfig");
   if (original.agent.thinkingLevel !== replay.agent.thinkingLevel) differences.push("thinkingLevel");
   if (original.agent.sessionMode !== replay.agent.sessionMode) differences.push("sessionMode");
   if (original.agent.appVersion !== replay.agent.appVersion) differences.push("appVersion");

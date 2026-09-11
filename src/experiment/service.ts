@@ -12,7 +12,7 @@ import { ControlledPiRuntime, type ControlledPiRuntimeOptions } from "../runtime
 import { PROMPT_POLICY_VERSION, formatTaskPrompt } from "../task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace, type WorkspaceInfo } from "../workspace/git.js";
 import { resolveSetupPlan } from "../workspace/setup.js";
-import { emptyArmMetrics, summarizeExperiment, type ExperimentBundle } from "./schema.js";
+import { emptyArmMetrics, parseExperimentPromptTimeoutMs, summarizeExperiment, type ExperimentBundle } from "./schema.js";
 import { saveExperiment } from "./store.js";
 
 export interface ExperimentOptions {
@@ -20,6 +20,7 @@ export interface ExperimentOptions {
   candidate: ExperienceCandidate;
   dataDirectory: string;
   pairs?: number;
+  promptTimeoutMs?: number;
   onStatus?: (message: string) => void;
   signal?: AbortSignal;
 }
@@ -33,6 +34,7 @@ function runtimeDifferences(source: RunManifest, runtime: ControlledPiRuntime): 
   if (source.agent.promptPolicyVersion !== PROMPT_POLICY_VERSION) differences.push("promptPolicyVersion");
   if (!runtime.hasAvailableModel || runtime.session.model?.provider !== source.agent.model.provider || runtime.session.model.id !== source.agent.model.id) differences.push("model");
   if (runtime.session.thinkingLevel !== source.agent.thinkingLevel) differences.push("thinkingLevel");
+  if (sha256Json(source.agent.modelConfig ?? null) !== sha256Json(runtime.modelConfig ?? null)) differences.push("modelConfig");
   if (sha256Json([...runtime.session.getActiveToolNames()].sort()) !== sha256Json(source.policy.tools)) differences.push("tools");
   if (sha256Json(runtime.contextFiles) !== sha256Json(source.contextFiles)) differences.push("contextFiles");
   return differences;
@@ -42,6 +44,7 @@ function runtimeDifferences(source: RunManifest, runtime: ControlledPiRuntime): 
 export async function runExperiment(options: ExperimentOptions, dependencies: ExperimentDependencies = {}): Promise<ExperimentBundle> {
   const pairs = options.pairs ?? 3;
   if (!Number.isSafeInteger(pairs) || pairs < 1 || pairs > 100) throw new Error("Experiment pairs must be between 1 and 100");
+  const promptTimeoutMs = parseExperimentPromptTimeoutMs(options.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS);
   const candidate = parseCandidateSnapshot(options.candidate);
   await assertRegularDirectory(options.dataDirectory);
   await assertRegularDirectory(join(options.dataDirectory, "runs"));
@@ -53,7 +56,7 @@ export async function runExperiment(options: ExperimentOptions, dependencies: Ex
   let experiment: ExperimentBundle = {
     schemaVersion: 1, id: randomUUID(), sourceRunId: options.sourceRunId, sourceRepository: plan.sourceRepository,
     sourceManifestSha256: sha256Json(source.manifest), taskSha256: source.manifest.task.sha256, baselineCommit: plan.baselineCommit,
-    candidate, pairsRequested: pairs, pairsCompleted: 0, createdAt: new Date().toISOString(), outcome: "inconclusive",
+    candidate, pairsRequested: pairs, promptTimeoutMs, pairsCompleted: 0, createdAt: new Date().toISOString(), outcome: "inconclusive",
     scopeViolations: 0, trials: [], errors: [], isolationDifferences: [],
     metrics: { control: emptyArmMetrics(), treatment: emptyArmMetrics(), pairedWins: 0, pairedLosses: 0 }
   };
@@ -75,6 +78,7 @@ export async function runExperiment(options: ExperimentOptions, dependencies: Ex
             const setup = await resolveSetupPlan(workspace, plan.setupPreference);
             runtime = await createRuntime({ workspace: workspace.workspace, getTask: () => plan.task, noSession: true,
               allowShell: plan.allowShell, requestedModel: plan.requestedModel, thinkingLevel: plan.thinkingLevel, tools: plan.tools,
+              ...(plan.recordedModelConfig ? { recordedModelConfig: plan.recordedModelConfig } : {}),
               agentDirectory: join(options.dataDirectory, "agent"), sessionDirectory: join(options.dataDirectory, "sessions", "controlled") });
             experiment.isolationDifferences.push(...runtimeDifferences(source.manifest, runtime));
             if (experiment.isolationDifferences.length > 0) throw new Error("Experimental runtime configuration differs from source; no prompt was submitted.");
@@ -83,7 +87,7 @@ export async function runExperiment(options: ExperimentOptions, dependencies: Ex
               noSession: true, setup, dataDirectory: options.dataDirectory, ...(options.onStatus ? { onStatus: options.onStatus } : {}),
               ...(options.signal ? { signal: options.signal } : {}),
               experiment: { experimentId: experiment.id, pairIndex, arm,
-                promptTimeoutMs: EXPERIMENT_PROMPT_TIMEOUT_MS,
+                promptTimeoutMs,
                 ...(arm === "treatment" ? { candidate } : {}),
                 effectivePromptSha256: sha256Text(arm === "treatment" ? renderCandidatePrompt(basePrompt, candidate) : basePrompt) }
             });

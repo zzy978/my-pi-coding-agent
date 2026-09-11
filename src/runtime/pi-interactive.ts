@@ -16,6 +16,9 @@ import { createInteractiveHostExtension } from "./interactive-host-extension.js"
 import { createExperienceExtension } from "./experience-extension.js";
 import { canonicalWorkspacePath, WorkspaceSessionStore } from "./session-store.js";
 import { getDataDirectories, getDataDirectory } from "./data-dir.js";
+import { readModelConfig, type ModelConfig } from "../model-config.js";
+import { applyModelLimits, configureModelRuntime, configuredModel } from "./model-configuration.js";
+import { limitSessionDuration } from "./session-duration.js";
 
 export interface PiInteractiveOptions {
   workspace: WorkspaceInfo;
@@ -26,6 +29,7 @@ export interface PiInteractiveOptions {
   initialPrompt?: string;
   dataDirectory?: string;
   agentDirectory?: string;
+  modelConfig?: ModelConfig;
 }
 
 async function initialSessionManager(
@@ -52,9 +56,10 @@ async function initialSessionManager(
 }
 
 export async function createPiInteractiveRuntime(options: PiInteractiveOptions): Promise<AgentSessionRuntime> {
+  const modelConfig = options.modelConfig ?? readModelConfig();
   const dataDirectory = options.dataDirectory ?? getDataDirectory();
   const directories = getDataDirectories(dataDirectory);
-  const store = await WorkspaceSessionStore.create(options.workspace.sourceRoot, dataDirectory);
+  const store = await WorkspaceSessionStore.create(options.workspace.workspace, dataDirectory);
   const initialSession = await initialSessionManager(options, store);
   const { sessionManager } = initialSession;
   const agentDirectory = options.agentDirectory ?? directories.agent;
@@ -118,13 +123,17 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
             createExperienceExtension({
               sourceRepository: options.workspace.sourceRoot,
               dataDirectory,
-              loadActiveCandidates: listActiveCandidates
+              loadActiveCandidates: options.workspace.gitUnavailable ? () => Promise.resolve([]) : listActiveCandidates
             })
           ]
         }
       });
+      await configureModelRuntime(services.modelRuntime, modelConfig);
+      applyModelLimits(services.modelRuntime, modelConfig);
+      const selectedModel = configuredModel(services.modelRuntime, modelConfig);
       const created = await createAgentSessionFromServices({
         services,
+        ...(selectedModel ? { model: selectedModel } : {}),
         sessionManager: targetSessionManager,
         ...(sessionStartEvent ? { sessionStartEvent } : {}),
         noTools: "builtin",
@@ -134,6 +143,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
           () => Promise.resolve(true)
         )
       });
+      limitSessionDuration(created.session, modelConfig.taskTimeoutMs);
       return {
         ...created,
         services,

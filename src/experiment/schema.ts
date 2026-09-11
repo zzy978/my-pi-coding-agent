@@ -24,6 +24,8 @@ export interface ExperimentBundle {
   baselineCommit: string;
   candidate: CandidateSnapshot;
   pairsRequested: number;
+  /** Missing in legacy records: those experiments used the fixed 15 minute budget. */
+  promptTimeoutMs?: number;
   pairsCompleted: number;
   createdAt: string;
   completedAt?: string;
@@ -37,6 +39,13 @@ export interface ExperimentBundle {
 
 export function emptyArmMetrics(): ArmMetrics {
   return { runs: 0, passed: 0, durationMs: 0, toolCalls: 0, retries: 0, tokens: 0, cost: 0 };
+}
+
+export function parseExperimentPromptTimeoutMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3_600_000) {
+    throw new Error("Experiment prompt timeout must be an integer between 1 and 3600000 milliseconds");
+  }
+  return value;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -91,6 +100,7 @@ export function parseExperiment(value: unknown): ExperimentBundle {
     schemaVersion: 1, id: assertArtifactId(item.id), sourceRunId: assertArtifactId(item.sourceRunId),
     sourceRepository: item.sourceRepository, sourceManifestSha256: hash(item.sourceManifestSha256), taskSha256: hash(item.taskSha256),
     baselineCommit: item.baselineCommit, candidate: parseCandidateSnapshot(item.candidate), pairsRequested,
+    ...(item.promptTimeoutMs === undefined ? {} : { promptTimeoutMs: parseExperimentPromptTimeoutMs(item.promptTimeoutMs) }),
     pairsCompleted: number(item.pairsCompleted), createdAt: timestamp(item.createdAt),
     ...(item.completedAt === undefined ? {} : { completedAt: timestamp(item.completedAt) }),
     outcome: item.outcome as ExperimentOutcome, scopeViolations: number(item.scopeViolations), trials,
@@ -106,6 +116,7 @@ export function trialIsolationDifferences(source: RunManifest, trial: RunManifes
   compare("baselineCommit", source.baselineCommit, trial.baselineCommit);
   compare("task", source.task, trial.task);
   compare("model", source.agent.model, trial.agent.model);
+  compare("modelConfig", source.agent.modelConfig ?? null, trial.agent.modelConfig ?? null);
   compare("thinkingLevel", source.agent.thinkingLevel, trial.agent.thinkingLevel);
   compare("appVersion", source.agent.appVersion, trial.agent.appVersion);
   compare("promptPolicyVersion", source.agent.promptPolicyVersion ?? null, trial.agent.promptPolicyVersion ?? null);
@@ -134,6 +145,7 @@ export function summarizeExperiment(experiment: ExperimentBundle, source: RunMan
     throw new Error("Experiment source evidence does not match");
   }
   const differences = new Set(experiment.isolationDifferences);
+  const promptTimeoutMs = parseExperimentPromptTimeoutMs(experiment.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS);
   const metrics = { control: emptyArmMetrics(), treatment: emptyArmMetrics(), pairedWins: 0, pairedLosses: 0 };
   const pairs = new Map<number, Partial<Record<"control" | "treatment", RunResult>>>();
   const workspacePaths = new Set<string>();
@@ -144,7 +156,7 @@ export function summarizeExperiment(experiment: ExperimentBundle, source: RunMan
     const context = bundle.manifest.experiment;
     if (!context || context.experimentId !== experiment.id || context.pairIndex !== trial.pairIndex || context.arm !== trial.arm ||
         (trial.arm === "treatment" && sha256Json(context.candidate) !== sha256Json(experiment.candidate))) throw new Error("Experiment trial metadata does not match");
-    if ((context.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS) !== EXPERIMENT_PROMPT_TIMEOUT_MS) differences.add("promptTimeoutMs");
+    if ((context.promptTimeoutMs ?? EXPERIMENT_PROMPT_TIMEOUT_MS) !== promptTimeoutMs) differences.add("promptTimeoutMs");
     for (const difference of trialIsolationDifferences(source, bundle.manifest)) differences.add(difference);
     if (workspacePaths.has(bundle.result.workspace.path) || bundle.result.workspace.path === source.sourceRepository) differences.add("freshWorkspace");
     workspacePaths.add(bundle.result.workspace.path);

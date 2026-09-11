@@ -56,7 +56,7 @@ function createFakeRuntime(workspace: string): ControlledPiRuntime {
         emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hidden" } } as AgentSessionEvent);
         emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "write", args: { path: "result.txt", content: "done\nSECRET" } } as AgentSessionEvent);
         await writeFile(join(workspace, "result.txt"), "done\n", "utf8");
-        emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "write", isError: false, result: { content: [{ type: "text", text: "done\nSECRET" }] } } as AgentSessionEvent);
+        emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "write", isError: false, result: { content: [{ type: "text", text: "Wrote result.txt\nBearer fake-tool-result-secret\u001b[2J\n" + '{"apiKey":"fake-json-result-key"}\n' + "x".repeat(2_000) }] } } as AgentSessionEvent);
         emit({ type: "agent_settled" } as AgentSessionEvent);
         stats = {
           ...stats,
@@ -173,6 +173,12 @@ describe("controlled run and replay lifecycle", () => {
     await expect(access(join(original.directory, "report.md"))).resolves.toBeUndefined();
     const trace = await readFile(join(original.directory, "trace.jsonl"), "utf8");
     expect(trace).toContain('"type":"tool_start"');
+    const toolEnd = trace.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as { type: string; data?: { resultSummary?: string } }).find((entry) => entry.type === "tool_end");
+    expect(toolEnd?.data?.resultSummary).toContain("Wrote result.txt");
+    expect(toolEnd?.data?.resultSummary?.length).toBeLessThanOrEqual(1_000);
+    expect(trace).not.toContain("fake-tool-result-secret");
+    expect(trace).not.toContain("fake-json-result-key");
+    expect(toolEnd?.data?.resultSummary).not.toContain("\u001b");
     expect(trace).toContain("[OMITTED 11 chars]");
     expect(trace).not.toContain("done\\nSECRET");
     expect(trace).not.toContain('"delta":"hidden"');

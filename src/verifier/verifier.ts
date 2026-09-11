@@ -19,12 +19,14 @@ export interface VerificationReport {
   changedFiles: string[];
   disallowedChangedFiles: string[];
   commands: VerificationCommandResult[];
+  changeAuditUnavailable?: boolean;
 }
 
 export async function runVerification(
   workspace: string,
   task: TaskSpec,
-  onCommandStart?: (command: string, index: number, total: number) => void
+  onCommandStart?: (command: string, index: number, total: number) => void,
+  options?: { allowUnavailableGit?: boolean }
 ): Promise<VerificationReport> {
   const commands: VerificationCommandResult[] = [];
 
@@ -60,13 +62,21 @@ export async function runVerification(
     }
   }
 
-  const changedFiles = await listChangedFiles(workspace);
+  let changedFiles: string[] = [];
+  let changeAuditUnavailable = false;
+  try {
+    changedFiles = await listChangedFiles(workspace);
+  } catch (error) {
+    if (!options?.allowUnavailableGit) throw error;
+    changeAuditUnavailable = true;
+  }
   const disallowedChangedFiles = changedFiles.filter((file) => !isAllowedChangedPath(file));
   const configured = task.verify.length > 0;
   const commandsPassed = configured && commands.length === task.verify.length && commands.every((item) => item.status === "passed");
   return {
     configured,
-    success: commandsPassed && disallowedChangedFiles.length === 0,
+    success: commandsPassed && !changeAuditUnavailable && disallowedChangedFiles.length === 0,
+    ...(changeAuditUnavailable ? { changeAuditUnavailable: true } : {}),
     changedFiles,
     disallowedChangedFiles,
     commands
@@ -74,12 +84,15 @@ export async function runVerification(
 }
 
 export function formatVerificationSummary(report: VerificationReport): string {
+  const auditSummary = report.changeAuditUnavailable
+    ? "Git 变更审计不可用，变更文件与受保护文件状态未知。"
+    : `Changed files: ${report.changedFiles.length}`;
   if (!report.configured) {
-    return `Verification incomplete: no commands configured.\nChanged files: ${report.changedFiles.length}`;
+    return `Verification incomplete: no commands configured.\n${auditSummary}`;
   }
   const lines = [
-    report.success ? "Verification passed." : "Verification failed.",
-    `Changed files: ${report.changedFiles.length}`,
+    report.success ? "Verification passed." : "Verification incomplete/failed.",
+    auditSummary,
     `Commands: ${report.commands.filter((item) => item.status === "passed").length}/${report.commands.length} passed`
   ];
   if (report.disallowedChangedFiles.length) {

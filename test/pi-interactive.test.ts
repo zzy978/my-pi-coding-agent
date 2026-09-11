@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
@@ -7,6 +7,8 @@ import { createPiInteractiveRuntime } from "../src/runtime/pi-interactive.js";
 import { createInteractiveTask } from "../src/task/task-spec.js";
 import { SessionPicker } from "../src/tui/session-picker.js";
 import type { StoredSessionInfo } from "../src/runtime/session-store.js";
+import { prepareReadyCurrentWorkspace } from "../src/workspace/setup.js";
+import { initializeGitRepository } from "./helpers/git-repository.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -15,6 +17,56 @@ afterEach(async () => {
 });
 
 describe("full Pi interactive runtime", () => {
+  it.each([false, true])("runs directory commands and isolates parent/child sessions (Git: %s)", async (withGit) => {
+    const root = await mkdtemp(join(tmpdir(), "picode-runtime-directory-"));
+    temporaryDirectories.push(root);
+    const workspace = join(root, "workspace");
+    const child = join(workspace, "子目录 with spaces");
+    const dataDirectory = join(root, "data");
+    await mkdir(child, { recursive: true });
+    if (withGit) await initializeGitRepository(workspace);
+    const task = createInteractiveTask({ verifyCommands: ['node -e "console.log(process.cwd())"'] });
+    const base = { task, allowShell: false, noSession: false, dataDirectory };
+    const parentInfo = (await prepareReadyCurrentWorkspace(workspace, { mode: "auto" })).workspace;
+    const parent = await createPiInteractiveRuntime({ ...base, workspace: parentInfo, continueSession: false });
+    let parentId: string;
+    try {
+      await parent.session.bindExtensions({ mode: "print" });
+      parentId = parent.session.sessionId;
+    } finally {
+      await parent.dispose();
+    }
+    const childInfo = (await prepareReadyCurrentWorkspace(child, { mode: "auto" })).workspace;
+    const runtime = await createPiInteractiveRuntime({ ...base, workspace: childInfo, continueSession: true });
+    try {
+      await runtime.session.bindExtensions({ mode: "print" });
+      expect(runtime.session.sessionId).not.toBe(parentId);
+      expect(runtime.services.cwd).toBe(child);
+      await runtime.session.prompt("/verify");
+      await runtime.session.prompt("/diff");
+      await runtime.session.prompt("/experience list");
+      const reportFile = (await readdir(join(dataDirectory, "reports"))).find((file) => file.endsWith(".json"));
+      if (!reportFile) throw new Error("Interactive verification did not write a report");
+      const report = JSON.parse(await readFile(join(dataDirectory, "reports", reportFile), "utf8")) as {
+        workspace: { workspace: string };
+        verification: { success: boolean; changeAuditUnavailable?: boolean; commands: { stdout: string }[] };
+      };
+      expect(report.workspace.workspace).toBe(child);
+      expect(report.verification.commands[0]?.stdout.trim()).toBe(child);
+      expect(report.verification.success).toBe(withGit);
+      expect(report.verification.changeAuditUnavailable).toBe(withGit ? undefined : true);
+    } finally {
+      await runtime.dispose();
+    }
+    const resumed = await createPiInteractiveRuntime({ ...base, workspace: parentInfo, continueSession: true });
+    try {
+      await resumed.session.bindExtensions({ mode: "print" });
+      expect(resumed.session.sessionId).toBe(parentId);
+    } finally {
+      await resumed.dispose();
+    }
+  });
+
   it("keeps long session summaries on bounded rows and supports arrow-key selection", () => {
     const base: Omit<StoredSessionInfo, "id" | "path" | "firstMessage"> = {
       cwd: "D:\\Agent",

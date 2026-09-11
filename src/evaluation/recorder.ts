@@ -11,7 +11,7 @@ import type { VerificationReport } from "../verifier/verifier.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
 import type { SetupPlan } from "../workspace/setup.js";
 import { compareRuns, comparisonMarkdown } from "./comparison.js";
-import { assertRecordableCommands, assertRecordableTask, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments } from "./redaction.js";
+import { assertRecordableCommands, assertRecordableTask, redactSensitiveText, sanitizeVerificationReport, summarizeToolArguments, summarizeToolResult } from "./redaction.js";
 import {
   EVALUATION_SCHEMA_VERSION,
   parseRunManifest,
@@ -132,6 +132,7 @@ export class RunRecorder {
         appVersion: APP_VERSION,
         promptPolicyVersion: PROMPT_POLICY_VERSION,
         model: { provider: model.provider, id: model.id },
+        ...(options.runtime.modelConfig ? { modelConfig: options.runtime.modelConfig } : {}),
         thinkingLevel: options.runtime.session.thinkingLevel,
         sessionMode: options.noSession ? "ephemeral" : "persistent"
       },
@@ -177,6 +178,7 @@ export class RunRecorder {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           isError: event.isError,
+          resultSummary: policyFailure ?? summarizeToolResult(event.result),
           ...(policyFailure ? { policyFailure } : {}),
           ...(started === undefined ? {} : { durationMs: Date.now() - started })
         });

@@ -46,6 +46,23 @@ function fixture(controlPassed: boolean, treatmentPassed: boolean) {
 }
 
 describe("experiment evidence conclusions", () => {
+  it("preserves an explicit 45 minute budget and rejects drift in either arm", () => {
+    const f = fixture(false, true);
+    const experiment = parseExperiment({ ...f.experiment, promptTimeoutMs: 2_700_000 });
+    expect(experiment).toHaveProperty("promptTimeoutMs", 2_700_000);
+    for (const [index, run] of f.runs.entries()) {
+      if (!run.manifest.experiment) throw new Error("Missing context");
+      run.manifest.experiment.promptTimeoutMs = 2_700_000;
+      experiment.trials[index]!.manifestSha256 = sha256Json(run.manifest);
+    }
+    expect(summarizeExperiment(experiment, f.source, f.runs).outcome).toBe("observed_improvement");
+    f.runs[0]!.manifest.experiment!.promptTimeoutMs = 900_000;
+    experiment.trials[0]!.manifestSha256 = sha256Json(f.runs[0]!.manifest);
+    expect(summarizeExperiment(experiment, f.source, f.runs).outcome).toBe("invalid_isolation");
+  });
+  it.each([0, -1, 1.5, 3_600_001, "2700000"])("rejects invalid stored budget %s", (promptTimeoutMs) => {
+    expect(() => parseExperiment({ ...fixture(false, true).experiment, promptTimeoutMs })).toThrow();
+  });
   it.each([
     [false, true, "observed_improvement"], [true, false, "observed_regression"],
     [true, true, "no_observed_gain"], [false, false, "no_observed_gain"]

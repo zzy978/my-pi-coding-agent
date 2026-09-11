@@ -5,6 +5,7 @@ import type { VerificationCommandResult, VerificationReport } from "../verifier/
 import type { SetupCommand, SetupPlan } from "../workspace/setup.js";
 import { parseCandidateSnapshot, renderCandidatePrompt, type CandidateSnapshot } from "../experience/candidate.js";
 import { formatTaskPrompt } from "../task/task-spec.js";
+import { parseRecordedModelConfig, type RecordedModelConfig } from "../model-config.js";
 
 export const EVALUATION_SCHEMA_VERSION = 1 as const;
 export const EXPERIMENT_PROMPT_TIMEOUT_MS = 900_000;
@@ -37,6 +38,7 @@ export interface RunManifest {
     appVersion: string;
     promptPolicyVersion?: number;
     model: { provider: string; id: string };
+    modelConfig?: RecordedModelConfig;
     thinkingLevel: string;
     sessionMode: "persistent" | "ephemeral";
   };
@@ -233,6 +235,9 @@ function parseSetup(value: unknown): NonNullable<RunManifest["setup"]> {
 
 function parseVerificationReport(value: unknown): VerificationReport {
   const record = objectValue(value, "result.verification");
+  if (record.changeAuditUnavailable !== undefined && record.changeAuditUnavailable !== false) {
+    throw new EvaluationArtifactError("Controlled verification requires available Git audit evidence");
+  }
   if (typeof record.configured !== "boolean" || typeof record.success !== "boolean") {
     throw new EvaluationArtifactError("result.verification configured/success must be boolean");
   }
@@ -361,6 +366,7 @@ export function parseRunManifest(value: unknown): RunManifest {
     task: { content: task, sha256: taskHash },
     agent: {
       appVersion: nonEmptyString(agent.appVersion, "manifest.agent.appVersion"),
+      ...(agent.modelConfig === undefined ? {} : { modelConfig: parseRecordedModelConfig(agent.modelConfig) }),
       ...(agent.promptPolicyVersion === undefined ? {} : { promptPolicyVersion: Number(agent.promptPolicyVersion) }),
       model: {
         provider: nonEmptyString(model.provider, "manifest.agent.model.provider"),

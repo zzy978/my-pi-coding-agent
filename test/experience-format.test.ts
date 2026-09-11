@@ -11,6 +11,12 @@ const proposal = {
 const json = JSON.stringify(proposal);
 
 describe("experience response format compatibility", () => {
+  it("accepts an explicit abstention but rejects silent empty or contradictory proposals", () => {
+    const empty = { candidates: [], noCandidateReason: "现有证据没有支持新的可复用经验" };
+    expect(parseSynthesisOutput(JSON.stringify(empty), evidence)).toEqual(empty);
+    expect(() => parseSynthesisOutput('{"candidates":[]}', evidence)).toThrow();
+    expect(() => parseSynthesisOutput(JSON.stringify({ ...proposal, noCandidateReason: "none" }), evidence)).toThrow();
+  });
   it.each([json, ` \n\`\`\`json\n${json}\n\`\`\`\n`, `\`\`\`\n${json}\n\`\`\``, `\`\`\`JSON\r\n${json}\r\n\`\`\``])("preserves Markdown content in a complete response %#", (source) => {
     expect(parseSynthesisOutput(source, evidence)).toEqual(proposal);
   });

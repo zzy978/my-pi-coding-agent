@@ -22,20 +22,24 @@ Usage:
   ${APP_NAME} [workspace] [options]
 
 Options:
-  -C, --cwd <path>        Target Git repository
+  -C, --cwd <path>        工作目录（默认当前目录；普通交互无需 Git）
   -t, --task <text>       Start with a task objective
       --task-file <path>  Load a YAML or JSON TaskSpec
       --verify <command>  Add a verification command (repeatable)
       --setup <command>   Run a setup command before the TUI starts (repeatable)
       --no-setup          Disable setup commands
-  -c, --continue          Continue the latest session for the source workspace
+  -c, --continue          Continue the latest session for the current directory
       --no-session        Do not persist the Pi session
       --no-shell          Disable the Shell tool (enabled by default)
       --record            Run one headless, reproducible prompt and save evaluation artifacts
       --list-runs         List recorded controlled runs
       --show-run <runId>  Show a recorded manifest and result
       --replay <runId>    Replay a run from its recorded baseline in a fresh worktree
-      --analyze-run <id>  从失败 run 提炼经验和候选（可能调用模型）
+      --analyze-run <id>  筛选并复盘成功或失败 run（可能调用模型）
+      --review-mode <mode> proposer（默认）、critic 或 compare（同批提案对比）
+      --min-success-tool-calls <n> 成功运行筛选阈值，默认 6，范围 0–10000
+      --force-review     跳过低调用筛选，仍要求有效验证和动作证据
+      --show-review-comparison <id> 从 compare 经验查看审查和评测比较（只读）
       --list-experiences 列出经验
       --show-experience <id> 查看经验、生成状态与候选 ID
       --experiment <runId> 对冻结任务执行新鲜配对实验（会调用模型）
@@ -154,6 +158,7 @@ async function runControlled(
       sessionDirectory: join(directories.sessions, "controlled"),
       ...(replayPlan ? {
         requestedModel: replayPlan.requestedModel,
+        ...(replayPlan.recordedModelConfig ? { recordedModelConfig: replayPlan.recordedModelConfig } : {}),
         thinkingLevel: replayPlan.thinkingLevel,
         tools: replayPlan.tools
       } : {})

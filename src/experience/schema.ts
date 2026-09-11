@@ -1,8 +1,9 @@
 import { isAbsolute } from "node:path";
 import { sha256Text, type RunUsage } from "../evaluation/schema.js";
 import { assertArtifactId, assertNoSecrets, parseCandidateSnapshot, type CandidateKind, type ExperienceCandidate } from "./candidate.js";
+import { assertReviewedCandidates, parseReviewMetadata, type ReviewMetadata } from "./review.js";
 
-export type FailureCategory = "none" | "no_verifier" | "setup_failed" | "tool_failed" | "execution_failed" | "verifier_failed" | "verifier_timeout" | "scope_violation" | "unknown";
+export type FailureCategory = "none" | "verified_success" | "recovered_success" | "no_verifier" | "setup_failed" | "tool_failed" | "execution_failed" | "verifier_failed" | "verifier_timeout" | "scope_violation" | "unknown";
 
 export interface FailureObservation {
   eligibility: "eligible" | "inconclusive" | "ignored";
@@ -24,7 +25,7 @@ export interface ExperienceCard {
 
 export interface SynthesisMetadata {
   status: "completed" | "skipped" | "failed";
-  generatorVersion: 1;
+  generatorVersion: 1 | 2;
   model: { provider: string; id: string };
   thinkingLevel: string;
   startedAt: string;
@@ -34,7 +35,7 @@ export interface SynthesisMetadata {
 }
 
 export interface ExperienceBundle {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   createdAt: string;
   sourceRunId: string;
@@ -46,8 +47,10 @@ export interface ExperienceBundle {
   evidence: EvidenceItem[];
   warnings: string[];
   card?: ExperienceCard;
+  noCandidateReason?: string;
   candidates: ExperienceCandidate[];
   synthesis: SynthesisMetadata;
+  review?: ReviewMetadata;
 }
 
 export interface CandidateProposal {
@@ -112,7 +115,9 @@ function parseCard(value: unknown, evidence: EvidenceItem[]): ExperienceCard {
   };
 }
 
-export function parseSynthesisOutput(source: string, evidence: EvidenceItem[]): { card: ExperienceCard; candidates: CandidateProposal[] } {
+export interface SynthesisOutput { card?: ExperienceCard; candidates: CandidateProposal[]; noCandidateReason?: string }
+
+export function parseSynthesisOutput(source: string, evidence: EvidenceItem[]): SynthesisOutput {
   if (source.length > 64_000) throw new Error("Synthesis output exceeds size limit");
   assertNoSecrets(source);
   // Unwrap only a complete response fence; never extract JSON from surrounding prose.
@@ -122,16 +127,23 @@ export function parseSynthesisOutput(source: string, evidence: EvidenceItem[]): 
   let parsed: unknown;
   try { parsed = JSON.parse(json); } catch { throw new Error("Synthesis output is not strict JSON (expected a JSON object or one complete JSON code fence)"); }
   const record = object(parsed, "synthesis");
-  keys(record, ["card", "candidates"], "synthesis");
-  if (!Array.isArray(record.candidates) || record.candidates.length < 1 || record.candidates.length > 3) throw new Error("Synthesis must propose 1-3 candidates");
-  const candidates = record.candidates.map((item): CandidateProposal => {
+  keys(record, ["card", "candidates", "noCandidateReason"], "synthesis");
+  if (!Array.isArray(record.candidates) || record.candidates.length > 3) throw new Error("Synthesis must propose 0-3 candidates");
+  if (record.candidates.length === 0) {
+    if (record.card !== undefined) throw new Error("Abstention must not contain a speculative card");
+    return { candidates: [], noCandidateReason: text(record.noCandidateReason, "noCandidateReason", 2_000) };
+  }
+  if (record.noCandidateReason !== undefined) throw new Error("Non-empty proposals cannot claim abstention");
+  const candidates = record.candidates.map(parseCandidateProposal);
+  return { card: parseCard(record.card, evidence), candidates };
+}
+
+export function parseCandidateProposal(item: unknown): CandidateProposal {
     const candidate = object(item, "candidate proposal");
     keys(candidate, ["kind", "title", "content", "applicability", "contraindications"], "candidate proposal");
     if (candidate.kind !== "prompt" && candidate.kind !== "skill" && candidate.kind !== "strategy") throw new Error("Candidate kind is invalid");
     return { kind: candidate.kind, title: text(candidate.title, "candidate.title", 200), content: text(candidate.content, "candidate.content", 16_384),
       applicability: strings(candidate.applicability, "candidate.applicability"), contraindications: strings(candidate.contraindications, "candidate.contraindications") };
-  });
-  return { card: parseCard(record.card, evidence), candidates };
 }
 
 export function parseExperienceCandidate(value: unknown): ExperienceCandidate {
@@ -153,7 +165,7 @@ export function parseSynthesisUsage(value: unknown): RunUsage {
 
 export function parseExperienceBundle(value: unknown): ExperienceBundle {
   const record = object(value, "experience");
-  if (record.schemaVersion !== 1) throw new Error("Unsupported experience schema version");
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) throw new Error("Unsupported experience schema version");
   const id = assertArtifactId(record.id);
   const sourceRunId = assertArtifactId(record.sourceRunId);
   const sourceRepository = text(record.sourceRepository, "sourceRepository");
@@ -171,26 +183,39 @@ export function parseExperienceBundle(value: unknown): ExperienceBundle {
   const eligibility = observation.eligibility;
   if (eligibility !== "eligible" && eligibility !== "inconclusive" && eligibility !== "ignored") throw new Error("Invalid observation eligibility");
   const category = observation.category as FailureCategory;
-  if (!["none", "no_verifier", "setup_failed", "tool_failed", "execution_failed", "verifier_failed", "verifier_timeout", "scope_violation", "unknown"].includes(category)) throw new Error("Invalid failure category");
+  const successCategory = category === "verified_success" || category === "recovered_success";
+  if (!["none", "no_verifier", "setup_failed", "tool_failed", "execution_failed", "verifier_failed", "verifier_timeout", "scope_violation", "unknown"].includes(category) && !(record.schemaVersion === 2 && successCategory)) throw new Error("Invalid failure category");
   const stage = observation.stage;
   if (stage !== "setup" && stage !== "execution" && stage !== "verification" && stage !== "unknown") throw new Error("Invalid failure stage");
   const synthesis = object(record.synthesis, "synthesis metadata");
   if (synthesis.status !== "completed" && synthesis.status !== "failed" && synthesis.status !== "skipped") throw new Error("Invalid synthesis status");
-  if (synthesis.generatorVersion !== 1) throw new Error("Unsupported generator version");
+  if (synthesis.generatorVersion !== 1 && !(record.schemaVersion === 2 && synthesis.generatorVersion === 2)) throw new Error("Unsupported generator version");
   const model = object(synthesis.model, "generator model");
   if (!Array.isArray(record.candidates) || record.candidates.length > 3) throw new Error("Invalid experience candidates");
   const candidates = record.candidates.map(parseExperienceCandidate);
   if (new Set(candidates.map((candidate) => candidate.id)).size !== candidates.length) throw new Error("Duplicate candidate ID");
   if (candidates.some((candidate) => candidate.sourceRunId !== sourceRunId || candidate.sourceExperienceId !== id)) throw new Error("Candidate source binding mismatch");
   const card = record.card === undefined ? undefined : parseCard(record.card, evidence);
-  if (synthesis.status === "completed" ? (!card || candidates.length === 0 || eligibility !== "eligible") : (card !== undefined || candidates.length !== 0)) throw new Error("Synthesis status contradicts its card or candidates");
+  const noCandidateReason = record.noCandidateReason === undefined ? undefined : text(record.noCandidateReason, "noCandidateReason", 2_000);
+  if (record.schemaVersion === 1 && noCandidateReason !== undefined) throw new Error("Legacy experience cannot contain abstention metadata");
+  if (synthesis.status === "completed"
+    ? (eligibility !== "eligible" || (candidates.length > 0 ? (!card || noCandidateReason !== undefined) : (record.schemaVersion === 1 || !noCandidateReason)))
+    : (card !== undefined || candidates.length !== 0 || noCandidateReason !== undefined)) throw new Error("Synthesis status contradicts its card or candidates");
   if (eligibility === "eligible" && ["none", "no_verifier", "setup_failed"].includes(category)) throw new Error("Insufficient evidence cannot be eligible");
+  const review = record.review === undefined ? undefined : parseReviewMetadata(record.review, evidence);
+  if (review) {
+    if (record.schemaVersion !== 2) throw new Error("Legacy experience cannot contain critic metadata");
+    if (review.status !== "skipped" && (synthesis.status !== "completed" || !card)) throw new Error("Critic requires completed proposals and card");
+    if (review.proposerExperienceId === id) throw new Error("Comparison cannot reference itself");
+    assertReviewedCandidates(review, candidates);
+  }
   return {
-    schemaVersion: 1, id, createdAt: timestamp(record.createdAt), sourceRunId, sourceRepository,
+    schemaVersion: record.schemaVersion, id, createdAt: timestamp(record.createdAt), sourceRunId, sourceRepository,
     sourceManifestSha256: hash(record.sourceManifestSha256), ...(record.sourceResultSha256 === undefined ? {} : { sourceResultSha256: hash(record.sourceResultSha256) }),
     taskSha256: hash(record.taskSha256), observation: { eligibility, category, stage, summary: text(observation.summary, "observation.summary"), evidenceRefs: evidenceReferences(observation.evidenceRefs, evidence) },
-    evidence, warnings: strings(record.warnings, "warnings", 20, true), ...(card ? { card } : {}), candidates,
-    synthesis: { status: synthesis.status, generatorVersion: 1, model: { provider: text(model.provider, "model.provider", 200), id: text(model.id, "model.id", 200) },
+    evidence, warnings: strings(record.warnings, "warnings", 20, true), ...(card ? { card } : {}), ...(noCandidateReason ? { noCandidateReason } : {}), candidates,
+    ...(review ? { review } : {}),
+    synthesis: { status: synthesis.status, generatorVersion: synthesis.generatorVersion, model: { provider: text(model.provider, "model.provider", 200), id: text(model.id, "model.id", 200) },
       thinkingLevel: text(synthesis.thinkingLevel, "thinkingLevel", 100), startedAt: timestamp(synthesis.startedAt), completedAt: timestamp(synthesis.completedAt),
       ...(synthesis.usage === undefined ? {} : { usage: parseSynthesisUsage(synthesis.usage) }), ...(synthesis.error === undefined ? {} : { error: text(synthesis.error, "synthesis.error", 2000) }) }
   };

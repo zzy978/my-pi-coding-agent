@@ -13,6 +13,7 @@ export interface ReplayPlan {
   requestedModel: { provider: string; id: string };
   thinkingLevel: NonNullable<ControlledPiRuntimeOptions["thinkingLevel"]>;
   tools: string[];
+  recordedModelConfig?: NonNullable<ControlledPiRuntimeOptions["recordedModelConfig"]>;
   setupPreference: SetupPreference;
 }
 
@@ -34,6 +35,7 @@ export function createReplayPlan(manifest: RunManifest, shellOverride?: boolean)
     allowShell: manifest.policy.allowShell,
     noSession: manifest.agent.sessionMode === "ephemeral",
     requestedModel: { ...manifest.agent.model },
+    ...(manifest.agent.modelConfig ? { recordedModelConfig: { ...manifest.agent.modelConfig } } : {}),
     thinkingLevel: manifest.agent.thinkingLevel as NonNullable<ControlledPiRuntimeOptions["thinkingLevel"]>,
     tools: [...manifest.policy.tools],
     setupPreference: manifest.setup

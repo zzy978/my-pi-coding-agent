@@ -7,6 +7,7 @@ import { listExperiments, loadExperiment } from "./experiment/store.js";
 import type { ExperimentBundle } from "./experiment/schema.js";
 import type { ExperienceBundle } from "./experience/schema.js";
 import { stripUnsafeControls } from "./experience/candidate.js";
+import { compareReviewPipelines } from "./experience/review-comparison.js";
 
 function print(message: string): void {
   console.log(stripUnsafeControls(message));
@@ -19,6 +20,11 @@ function showExperience(bundle: ExperienceBundle): void {
     `事实判定：${bundle.observation.eligibility} / ${bundle.observation.category}`,
     `摘要：${bundle.observation.summary}`,
     `生成状态：${bundle.synthesis.status}`,
+    ...(bundle.noCandidateReason ? [`无候选原因：${bundle.noCandidateReason}`] : []),
+    ...(bundle.review ? [`Critic 审查：${bundle.review.status}`,
+      ...bundle.review.decisions.map((decision) => `提案 ${decision.candidateIndex + 1}：${decision.verdict}；${decision.reason}；证据：${decision.evidenceRefs.join(", ")}`),
+      ...(bundle.review.error ? [`审查错误：${bundle.review.error}`] : []),
+      ...(bundle.review.proposerExperienceId ? [`Proposer 对照经验：${bundle.review.proposerExperienceId}`, `查看比较：--show-review-comparison ${bundle.id}`] : [])] : []),
     ...(bundle.synthesis.error ? [`生成错误：${bundle.synthesis.error}`] : []),
     ...(bundle.warnings.length ? [`证据限制：${bundle.warnings.join("；")}`] : []),
     ...(bundle.card ? [`经验卡：${bundle.card.title}`, `模式：${bundle.card.pattern}`,
@@ -55,9 +61,23 @@ export async function handleLearningManagement(options: CliOptions, dataDirector
   if (!command) return undefined;
   switch (command.mode) {
     case "analyze": {
-      const bundle = await analyzeRun(command.runId, dataDirectory);
+      const bundle = await analyzeRun(command.runId, dataDirectory, command);
       showExperience(bundle);
-      return bundle.synthesis.status === "failed" ? 1 : 0;
+      return bundle.synthesis.status === "failed" || bundle.review?.status === "failed" ? 1 : 0;
+    }
+    case "show-review-comparison": {
+      const comparison = await compareReviewPipelines(command.id, dataDirectory);
+      if (options.json) console.log(JSON.stringify(comparison, null, 2));
+      else print([
+        `Proposer：${comparison.proposerExperienceId}；候选 ${comparison.proposer.candidates}；已评测 ${comparison.proposer.evaluatedCandidates}；观察改善 ${comparison.proposer.improvedCandidates}；观察退化 ${comparison.proposer.regressedCandidates}`,
+        `Critic：${comparison.criticExperienceId}；状态 ${comparison.criticStatus}；保留 ${comparison.critic.candidates}；已评测 ${comparison.critic.evaluatedCandidates}；观察改善 ${comparison.critic.improvedCandidates}；观察退化 ${comparison.critic.regressedCandidates}`,
+        `Proposer 计费估计：${comparison.proposerCost ?? "未知"}；Critic 计费估计：${comparison.criticCost ?? "未知"}`,
+        `回顾性可避免评测费用：${comparison.retrospectiveAvoidableEvaluationCost ?? "证据不足"}；质量比较材料${comparison.qualityComparisonAvailable ? "齐全" : "不足"}`,
+        ...comparison.proposals.map((proposal) => `提案 ${proposal.index + 1}：${proposal.decision} / ${proposal.assessment}；Proposer 候选 ${proposal.proposerCandidateId}${proposal.criticCandidateId ? `；Critic 候选 ${proposal.criticCandidateId}` : ""}`),
+        ...(comparison.unavailableExperimentIds.length ? [`无法核验的实验：${comparison.unavailableExperimentIds.join(", ")}`] : []),
+        ...comparison.limitations
+      ].join("\n"));
+      return 0;
     }
     case "list-experiences": {
       const experiences = await listExperiences(dataDirectory);

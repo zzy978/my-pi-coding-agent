@@ -4,10 +4,12 @@
   "description": "A verifiable in-place TUI coding agent built on Pi",
   "type": "module",
   "bin": {
+    "picode": "dist/cli.js",
     "pi-agent-tui": "dist/cli.js"
   },
   "files": [
     "dist",
+    ".env.example",
     "README.md",
     "LICENSE"
   ],

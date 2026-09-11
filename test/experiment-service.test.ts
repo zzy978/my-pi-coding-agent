@@ -36,6 +36,7 @@ function fakeRuntime(workspace: string, prompts: string[], improvement = true): 
       subscribe: () => () => undefined,
       abort: () => Promise.resolve(),
       abortCompaction: () => undefined,
+      abortRetry: () => undefined,
       prompt: async (text: string) => {
         prompts.push(text);
         if (improvement && text.includes("<experience-guidance")) await writeFile(join(workspace, "result.txt"), "done\n", "utf8");
@@ -73,6 +74,26 @@ async function fixture(withVerifier = true) {
 }
 
 describe("candidate experiments", () => {
+  it("records the same configured 45 minute budget in both arms and replay", async () => {
+    const f = await fixture();
+    const options = { sourceRunId: f.original.manifest.runId, candidate: f.candidate, dataDirectory: f.dataDirectory,
+      pairs: 1, promptTimeoutMs: 2_700_000 };
+    const experiment = await runExperiment(options, {
+      createRuntime: (runtimeOptions) => Promise.resolve(fakeRuntime(runtimeOptions.workspace, []))
+    });
+    expect(experiment).toHaveProperty("promptTimeoutMs", 2_700_000);
+    expect(experiment.outcome).toBe("observed_improvement");
+    for (const trial of experiment.trials) {
+      const run = await loadRunBundle(trial.runId, f.dataDirectory);
+      expect(run.manifest.experiment?.promptTimeoutMs).toBe(2_700_000);
+      expect(createReplayPlan(run.manifest).experiment?.promptTimeoutMs).toBe(2_700_000);
+    }
+    expect(await loadExperiment(experiment.id, f.dataDirectory)).toEqual(experiment);
+  });
+  it.each([0, -1, 1.5, 3_600_001, NaN])("rejects invalid runtime budget %s before touching storage", async (promptTimeoutMs) => {
+    const options = { sourceRunId: "missing", candidate: {} as ExperienceCandidate, dataDirectory: "missing", promptTimeoutMs };
+    await expect(runExperiment(options)).rejects.toThrow("prompt timeout");
+  });
   it("runs three fresh, alternating pairs and preserves frozen treatment replay", async () => {
     const f = await fixture();
     const prompts: string[] = [];
@@ -186,10 +207,12 @@ describe("candidate experiments", () => {
     expect(experiment.errors.join(" ")).toMatch(/abort|failed/i);
   }, 30_000);
 
-  it("aborts compaction and the model when a frozen prompt deadline expires", async () => {
+  it.each(["experiment", "task"] as const)("aborts compaction and the model when a frozen %s deadline expires", async (deadline) => {
     const f = await fixture();
     const workspace = await prepareWorkspace(f.source, { inPlace: false, dataDirectory: f.dataDirectory });
     const runtime = fakeRuntime(workspace.workspace, []);
+    if (deadline === "task") Object.assign(runtime, { modelConfig: { requestTimeoutMs: 5000, maxOutputTokens: 100,
+      taskTimeoutMs: 20, baseUrlSha256: "e".repeat(64) } });
     let settlePrompt: (() => void) | undefined;
     let compactionAborted = false;
     runtime.session.prompt = () => new Promise<void>((resolve) => { settlePrompt = resolve; });
@@ -198,8 +221,8 @@ describe("candidate experiments", () => {
     try {
       const run = await executeControlledRun({ kind: "run", runtime, task: f.task, workspace, noSession: true, allowShell: false,
         setup: { source: "disabled", commands: [] }, dataDirectory: f.dataDirectory,
-        experiment: { experimentId: "timeout-fixture", pairIndex: 0, arm: "control", promptTimeoutMs: 20,
-          effectivePromptSha256: sha256Text(formatTaskPrompt(f.task, f.task.objective)) } });
+        ...(deadline === "experiment" ? { experiment: { experimentId: "timeout-fixture", pairIndex: 0, arm: "control" as const, promptTimeoutMs: 20,
+          effectivePromptSha256: sha256Text(formatTaskPrompt(f.task, f.task.objective)) } } : {}) });
       expect(compactionAborted).toBe(true);
       expect(run.result.status).toBe("execution_failed");
       expect(run.result.errors.join(" ")).toContain("timed out");

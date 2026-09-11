@@ -2,6 +2,7 @@
 
 import { APP_NAME, isSupportedNodeVersion, minimumNodeVersionText } from "./config.js";
 import { CliUsageError, parseCliArgs } from "./cli-args.js";
+import { redactSensitiveText } from "./evaluation/redaction.js";
 
 if (!isSupportedNodeVersion()) {
   console.error(`${APP_NAME} requires Node.js >= ${minimumNodeVersionText()}; current version is ${process.versions.node}.`);
@@ -15,7 +16,7 @@ if (!isSupportedNodeVersion()) {
     if (error instanceof CliUsageError) {
       console.error(`${error.message}\nRun ${APP_NAME} --help for usage.`);
     } else {
-      console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+      console.error(redactSensitiveText(error instanceof Error ? error.stack ?? error.message : String(error)));
     }
     process.exitCode = 1;
   }
