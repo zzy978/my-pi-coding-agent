@@ -14,6 +14,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "benchmark:swe-mini": "tsx src/benchmark/swe-mini-cli.ts",
+    "benchmark:swe-holdout": "tsx src/benchmark/swe-holdout-cli.ts",
     "benchmark:exercism": "tsx src/benchmark/exercism-cli.ts",
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",

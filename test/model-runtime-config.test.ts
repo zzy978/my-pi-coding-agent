@@ -23,6 +23,20 @@ afterEach(async () => {
 });
 
 describe("model configuration at the HTTP boundary", () => {
+  it("benchmark remote shell replaces all host tools and retains command policy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "picode-remote-shell-"));
+    directories.push(root);
+    const config = readModelConfig({ path: null, env: { PICODE_MODEL_PROVIDER: "openai", PICODE_MODEL_ID: "gpt-4o", PICODE_MODEL_API_KEY: "fake-session-key" } });
+    const task = createInteractiveTask({});
+    const exec = vi.fn(() => Promise.resolve({ exitCode: 0 }));
+    const runtime = await ControlledPiRuntime.create({ workspace: root, getTask: () => task, noSession: true, allowShell: true,
+      modelConfig: config, agentDirectory: join(root, "agent"), remoteShell: { exec } });
+    try {
+      expect(runtime.session.getActiveToolNames()).toEqual(["bash"]);
+      expect(runtime.contextFiles).toEqual([]);
+    } finally { runtime.dispose(); }
+    expect(exec).not.toHaveBeenCalled();
+  });
   it.each(["request", "caller"] as const)("cancels a stalled HTTP response from the %s deadline", async (cause) => {
     let received = false;
     let warmedUp = false;

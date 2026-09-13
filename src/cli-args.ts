@@ -27,6 +27,7 @@ export interface CliOptions {
   replayRunId?: string;
   json: boolean;
   doctor: boolean;
+  diagnostics: boolean;
   help: boolean;
   version: boolean;
   learning?: LearningOptions;
@@ -67,6 +68,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let replayRunId: string | undefined;
   let json = false;
   let doctor = false;
+  let diagnostics = false;
   let help = false;
   let version = false;
   let learningFlag: string | undefined;
@@ -209,6 +211,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
       case "--doctor":
         doctor = true;
         break;
+      case "--diagnostics":
+        diagnostics = true;
+        break;
       case "--help":
       case "-h":
         help = true;
@@ -231,6 +236,10 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   }
   if (positionalWorkspace) workspace = positionalWorkspace;
   const managementModes = [listRuns, Boolean(showRunId), Boolean(replayRunId)].filter(Boolean).length;
+  if (diagnostics && (managementModes || record || doctor || learningFlag || task || taskFile || verifyCommands.length ||
+    setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession)) {
+    throw new CliUsageError("--diagnostics 不能与执行参数或其他运行模式组合");
+  }
   if (managementModes > 1) throw new CliUsageError("Use only one of --list-runs, --show-run, or --replay");
   if (record && managementModes > 0) throw new CliUsageError("--record cannot be combined with run management options");
   if (noSetup && setupCommands.length > 0) throw new CliUsageError("--setup cannot be combined with --no-setup");
@@ -284,7 +293,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     }
   }
   const learningInspection = learning && ["list-experiences", "show-experience", "show-review-comparison", "list-experiments", "show-experiment", "list-promotions"].includes(learning.mode);
-  if (json && !(listRuns || showRunId || learningInspection)) {
+  if (json && !(diagnostics || listRuns || showRunId || learningInspection)) {
     throw new CliUsageError("--json requires --list-runs, --show-run, or a read-only experience/experiment inspection");
   }
 
@@ -306,6 +315,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     ...(replayRunId ? { replayRunId } : {}),
     json,
     doctor,
+    diagnostics,
     help,
     version,
     ...(learning ? { learning } : {})

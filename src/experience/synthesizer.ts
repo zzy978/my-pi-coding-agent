@@ -3,7 +3,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { redactSensitiveText } from "../evaluation/redaction.js";
 import type { RunUsage } from "../evaluation/schema.js";
 import type { EvidenceItem, FailureObservation } from "./schema.js";
-import { readModelConfig } from "../model-config.js";
+import { readModelConfig, type ModelConfig } from "../model-config.js";
 import { configureModelRuntime } from "../runtime/model-configuration.js";
 
 export interface SynthesisInput {
@@ -11,6 +11,7 @@ export interface SynthesisInput {
   evidence: EvidenceItem[];
   model: { provider: string; id: string };
   dataDirectory: string;
+  modelConfig?: ModelConfig;
 }
 
 export interface SynthesisResponse { text: string; usage?: RunUsage; error?: string }
@@ -39,7 +40,7 @@ export async function completeExperienceStage(input: SynthesisInput, material: u
   const payload = JSON.stringify(material);
   if (payload.length > maximum) throw new Error(`Experience material exceeds the ${maximum} character size limit`);
   const controller = new AbortController();
-  const config = readModelConfig();
+  const config = input.modelConfig ?? readModelConfig();
   const timer = setTimeout(() => controller.abort(), config.synthesisTimeoutMs);
   timer.unref();
   try {

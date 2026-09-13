@@ -29,7 +29,22 @@ export function modelSecrets(): readonly string[] {
   return [...runtimeSecrets];
 }
 
+export interface ConfigSource {
+  kind: "environment" | "file" | "default" | "programmatic";
+  path?: string;
+  overriddenByEmptyEnvironment?: boolean;
+}
+
+export interface ModelConfigSnapshot {
+  config: ModelConfig;
+  sources: Partial<Record<keyof ModelConfig, ConfigSource>>;
+}
+
 export function readModelConfig(options: { path?: string | null; env?: NodeJS.ProcessEnv } = {}): ModelConfig {
+  return readModelConfigWithSources(options).config;
+}
+
+export function readModelConfigWithSources(options: { path?: string | null; env?: NodeJS.ProcessEnv } = {}): ModelConfigSnapshot {
   const env = options.env ?? process.env;
   const path = options.path === undefined ? env.PICODE_ENV_FILE || defaultEnvPath : options.path;
   let file: NodeJS.ProcessEnv = {};
@@ -64,7 +79,7 @@ export function readModelConfig(options: { path?: string | null; env?: NodeJS.Pr
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
     } catch { throw new Error("PICODE_MODEL_BASE_URL 必须为 HTTP(S) 地址，不得包含用户名、密码、查询参数或片段。"); }
   }
-  return {
+  const config: ModelConfig = {
     ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}),
     ...(apiKey ? { apiKey } : {}), ...(baseUrl ? { baseUrl } : {}),
     requestTimeoutMs: number("PICODE_MODEL_REQUEST_TIMEOUT_MS", 120_000),
@@ -73,6 +88,19 @@ export function readModelConfig(options: { path?: string | null; env?: NodeJS.Pr
     synthesisTimeoutMs: number("PICODE_SYNTHESIS_TIMEOUT_MS", 120_000),
     synthesisMaxOutputTokens: number("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", 16_000)
   };
+  const names: Record<keyof ModelConfig, string> = {
+    provider: "PICODE_MODEL_PROVIDER", modelId: "PICODE_MODEL_ID", apiKey: "PICODE_MODEL_API_KEY",
+    baseUrl: "PICODE_MODEL_BASE_URL", requestTimeoutMs: "PICODE_MODEL_REQUEST_TIMEOUT_MS",
+    maxOutputTokens: "PICODE_MODEL_MAX_OUTPUT_TOKENS", taskTimeoutMs: "PICODE_MODEL_TASK_TIMEOUT_MS",
+    synthesisTimeoutMs: "PICODE_SYNTHESIS_TIMEOUT_MS", synthesisMaxOutputTokens: "PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS"
+  };
+  const sources: ModelConfigSnapshot["sources"] = {};
+  for (const [field, name] of Object.entries(names)) {
+    sources[field as keyof ModelConfig] = env[name] !== undefined
+      ? (env[name]?.trim() ? { kind: "environment" } : { kind: "default", overriddenByEmptyEnvironment: true })
+      : file[name]?.trim() && path !== null ? { kind: "file", path } : { kind: "default" };
+  }
+  return { config, sources };
 }
 
 export function parseRecordedModelConfig(value: unknown): RecordedModelConfig {

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { synthesizeExperience, type SynthesisInput } from "../src/experience/synthesizer.js";
+import { readModelConfig } from "../src/model-config.js";
 
 type Model = ReturnType<ModelRuntime["getAvailableSnapshot"]>[number];
 type Message = Awaited<ReturnType<ModelRuntime["completeSimple"]>>;
@@ -24,6 +25,15 @@ const input: SynthesisInput = {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("isolated experience synthesis", () => {
+  it("uses a frozen batch configuration instead of later environment edits", async () => {
+    const frozen = readModelConfig({ path: null, env: { PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS: "321" } });
+    vi.stubEnv("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", "789");
+    await synthesizeExperience({ ...input, modelConfig: frozen }, () => Promise.resolve({
+      getAvailableSnapshot: () => [model], completeSimple: (_model, _context, options) => {
+        expect(options?.maxTokens).toBe(321); return Promise.resolve(answer);
+      }
+    }));
+  });
   it("uses independent synthesis limits and the source model despite a different default", async () => {
     vi.stubEnv("PICODE_SYNTHESIS_TIMEOUT_MS", "2345");
     vi.stubEnv("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", "123");

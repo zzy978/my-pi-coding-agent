@@ -21,6 +21,18 @@ function sanitizeStructuredEvidence(value: unknown): unknown {
   return value;
 }
 
+/** Excerpts are text, so validate the final serialized representation too. */
+export function serializeEvidence(value: unknown): string {
+  const sanitized = sanitizeStructuredEvidence(value);
+  let excerpt = typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const next = clean(excerpt);
+    if (next === excerpt) return next;
+    excerpt = next;
+  }
+  return "[OMITTED: evidence could not be safely serialized]";
+}
+
 export async function collectEvidence(bundle: RunBundle, dataDirectory: string): Promise<CollectedEvidence> {
   await assertRegularDirectory(dataDirectory);
   await assertRegularDirectory(join(dataDirectory, "runs"));
@@ -32,8 +44,7 @@ export async function collectEvidence(bundle: RunBundle, dataDirectory: string):
   const add = (ref: string, value: unknown): void => {
     // Redact raw strings before JSON escaping: a credential containing quotes or backslashes
     // would no longer match its environment value after serialization.
-    const sanitized = sanitizeStructuredEvidence(value);
-    const excerpt = (typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized)).slice(0, 4_000);
+    const excerpt = serializeEvidence(value);
     if (evidence.length >= 80 || excerptCharacters + excerpt.length > 32_000) { capped = true; return; }
     excerptCharacters += excerpt.length;
     evidence.push({ ref, excerpt, sha256: sha256Text(excerpt) });

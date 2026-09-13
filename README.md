@@ -57,6 +57,19 @@ if (-not (Test-Path -LiteralPath D:\Agent\.env)) {
 
 交互、受控运行和 `--doctor` 使用同一个配置入口；经验提炼使用同样的认证/地址配置，但坚持使用来源记录中的模型和独立的提炼上限。任务总时限通过取消信号停止执行，不包含 setup 和后续验证，也不能保证强制终止不响应取消的第三方扩展。输出上限是单次调用上限，不是整个任务累计 token 预算。
 
+### 查看配置与提示来源
+
+```powershell
+picode D:\projects\my-repo --diagnostics
+picode D:\projects\my-repo --diagnostics --json
+```
+
+`--diagnostics` 无需 TTY 或 Git，只读取配置和当前磁盘上的上下文文件，不创建数据目录、执行 setup、加载扩展或发起模型请求。输出包括配置值及来源（系统环境变量、配置文件、默认值）、上下文文件 SHA-256 和宿主内置工具清单；可用 `--no-shell` 查看关闭 Shell 的工具集合。不能与任务、验证、setup、会话恢复或其他运行模式混用。
+
+启动前无法确定会话最终选择的模型和扩展工具；在交互会话中使用 `/diagnostics` 或 `/diagnostics --json` 查看实际模型、有效单次输出上限、已加载上下文和 system/append 提示片段哈希、扩展路径、加载错误数量及活动工具。配置来源保留该会话运行时启动时的快照，不会因事后修改 `.env` 而冒充已经生效。密钥仅显示是否配置及来源，服务地址仅显示指纹；不显示提示正文。未配置 `PICODE_MODEL_API_KEY` 不代表 Pi 认证不可用。
+
+JSON 的 `mode` 区分 `preflight` 与 `session`；可保存同类快照后比较 `configuration`、`model`、`contextFiles`、`prompts` 和 `tools`。启动前的空扩展列表表示未加载，不代表没有扩展；提示片段哈希也不代表完整模型请求或历史运行快照。
+
 新记录在 manifest 中保存请求上限、输出上限、任务总时限和模型服务地址的 SHA-256 指纹，不保存密钥。重放与配对实验恢复记录的上限，当前服务地址变化或模型无法满足记录的输出上限时拒绝提交模型任务；配对实验自身的时限继续生效，多个总时限取较短者。旧记录仍可查看和重放，但缺少新配置快照的旧记录不能与新运行判定为配置一致，需重新记录后再做配对实验。文件策略版本现为 `4`。
 
 ## 安装与运行
@@ -271,6 +284,7 @@ pi-agent-tui --revoke-candidate CANDIDATE_ID --approve
 | `/verify` | 执行验证命令并生成报告；Git 不可用时标记变更审计缺失 |
 | `/diff` | 查看所属仓库的变更文件和 diff 统计；Git 不可用时提示原因 |
 | `/status` | 查看宿主任务、工作区、模型与会话；用量使用 Pi 的 `/session` 查看 |
+| `/diagnostics [--json]` | 查看当前配置来源、实际模型与上限、上下文/提示哈希、已加载扩展和活动工具 |
 | `/experience [list \| use <ID> \| off]` | 列出、选择或停用本仓库已晋升的经验候选 |
 
 Pi 自带的 `Esc`、`Ctrl+C`、队列、模型切换和完整快捷键行为保持不变；使用 `/hotkeys` 查看当前配置。
@@ -342,6 +356,12 @@ MIT
 被拒绝的 Shell 调用返回规则 ID、拒绝原因和脱敏命令预览；受控运行在 `trace.jsonl` 的 `tool_end.data.policyFailure` 保存这些信息，通过同一条记录的 `toolCallId` 关联调用。预览最长约 1200 字符，凭据与终端控制字符经过处理；涉及环境变量枚举或 `.env` 的命令整体隐藏。普通命令正文和工具输出仍不记录。脱敏为尽力识别，不能保证识别任意自定义秘密格式。
 
 `format` 按调用位置识别，普通路径（如 `tests/format/`）和源码变量不再触发磁盘格式化拒绝。识别覆盖直接调用和常见 Shell/进程包装，不是完整解释器或沙箱。此变更将运行策略版本提升为 3；旧策略实验不能视为同配置结果。
+
+### SWE-bench Mini 同题经验复用
+
+SWE-bench Verified Mini 的两轮同题实验见 [运行指南](docs/swe-mini-r0-b.md)。入口为 `npm run benchmark:swe-mini -- prepare|run|status`，流程为 R0 → 逐题复盘 → 冻结经验 → B；共 100 次任务执行，复盘另计。两轮均使用独立 Linux 容器的 Bash 工具，官方评分结果与 token 分别记录，不作为跨任务晋升或泛化收益证据。
+
+冻结 Mini 经验库的新任务泛化实验见 [40题双组运行指南](docs/swe-holdout.md)。入口为 `npm run benchmark:swe-holdout -- catalog|prepare|run|status`；原仓库新题20道、新仓库题20道，每题两组共80次新运行，任务与Mini不重合，实验期间不更新经验库。
 
 ### 实验模型阶段预算
 

@@ -171,10 +171,12 @@ describe("full Pi interactive runtime", () => {
       expect(runtime.services.resourceLoader.getThemes().themes.map((loadedTheme) => loadedTheme.name)).toContain("project-demo");
       expect(runtime.services.agentDir).toBe(join(dataDirectory, "agent"));
       expect(runtime.session.extensionRunner.getRegisteredCommands().map((command) => command.name)).toEqual(
-        expect.arrayContaining(["task", "allow", "verify-add", "run", "verify", "diff", "status", "sessions", "temp", "experience"])
+        expect.arrayContaining(["task", "allow", "verify-add", "run", "verify", "diff", "status", "sessions", "temp", "experience", "diagnostics"])
       );
       await runtime.session.prompt("/experience list");
       await runtime.session.prompt("/experience off");
+      await runtime.session.prompt("/diagnostics");
+      await runtime.session.prompt("/diagnostics --json");
     } finally {
       await runtime.dispose();
     }

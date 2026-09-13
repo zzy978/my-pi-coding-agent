@@ -16,7 +16,9 @@ import { createInteractiveHostExtension } from "./interactive-host-extension.js"
 import { createExperienceExtension } from "./experience-extension.js";
 import { canonicalWorkspacePath, WorkspaceSessionStore } from "./session-store.js";
 import { getDataDirectories, getDataDirectory } from "./data-dir.js";
-import { readModelConfig, type ModelConfig } from "../model-config.js";
+import { readModelConfigWithSources, type ModelConfig, type ModelConfigSnapshot } from "../model-config.js";
+import { createDiagnosticsExtension } from "../diagnostics.js";
+import type { ResourceLoader } from "@earendil-works/pi-coding-agent";
 import { applyModelLimits, configureModelRuntime, configuredModel } from "./model-configuration.js";
 import { limitSessionDuration } from "./session-duration.js";
 
@@ -56,7 +58,9 @@ async function initialSessionManager(
 }
 
 export async function createPiInteractiveRuntime(options: PiInteractiveOptions): Promise<AgentSessionRuntime> {
-  const modelConfig = options.modelConfig ?? readModelConfig();
+  const configuration: ModelConfigSnapshot = options.modelConfig
+    ? { config: options.modelConfig, sources: {} } : readModelConfigWithSources();
+  const modelConfig = configuration.config;
   const dataDirectory = options.dataDirectory ?? getDataDirectory();
   const directories = getDataDirectories(dataDirectory);
   const store = await WorkspaceSessionStore.create(options.workspace.workspace, dataDirectory);
@@ -95,11 +99,13 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
       rawReleaseLock();
     } : undefined;
     try {
+      const diagnosticsState: { loader?: ResourceLoader } = {};
       const services = await createAgentSessionServices({
         cwd,
         agentDir,
         resourceLoaderOptions: {
           extensionFactories: [
+            createDiagnosticsExtension(configuration, () => diagnosticsState.loader),
             createPolicyExtension(cwd, () => options.task, {
               allowShell: options.allowShell,
               interactiveShellApproval: true
@@ -128,6 +134,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
           ]
         }
       });
+      diagnosticsState.loader = services.resourceLoader;
       await configureModelRuntime(services.modelRuntime, modelConfig);
       applyModelLimits(services.modelRuntime, modelConfig);
       const selectedModel = configuredModel(services.modelRuntime, modelConfig);

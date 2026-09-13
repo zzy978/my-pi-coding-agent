@@ -1,7 +1,10 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, BashOperations } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
+  createBashToolDefinition,
+  defineTool,
+  SettingsManager,
   SessionManager
 } from "@earendil-works/pi-coding-agent";
 import { mkdir } from "node:fs/promises";
@@ -9,7 +12,7 @@ import { basename, join } from "node:path";
 import { sha256Text } from "../evaluation/schema.js";
 import { createPolicyExtension } from "../policy/policy-extension.js";
 import { relativePathWithin } from "../policy/path-policy.js";
-import { createSafeToolDefinitions } from "../policy/safe-tools.js";
+import { createApprovalGatedShellOperations, createSafeToolDefinitions } from "../policy/safe-tools.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import { getDataDirectories } from "./data-dir.js";
 import { parseRecordedModelConfig, readModelConfig, type ModelConfig, type RecordedModelConfig } from "../model-config.js";
@@ -27,6 +30,8 @@ export interface ControlledPiRuntimeOptions {
   sessionDirectory?: string;
   modelConfig?: ModelConfig;
   recordedModelConfig?: RecordedModelConfig;
+  /** Benchmark-only remote execution; replaces every local file/shell tool. */
+  remoteShell?: BashOperations;
 }
 
 export class ControlledPiRuntime {
@@ -40,6 +45,7 @@ export class ControlledPiRuntime {
   ) {}
 
   static async create(options: ControlledPiRuntimeOptions): Promise<ControlledPiRuntime> {
+    if (options.remoteShell && !options.allowShell) throw new Error("Remote shell requires allowShell");
     const config = options.modelConfig ?? readModelConfig();
     const frozenConfig = options.recordedModelConfig ? parseRecordedModelConfig(options.recordedModelConfig) : undefined;
     const limits = frozenConfig ?? config;
@@ -49,11 +55,13 @@ export class ControlledPiRuntime {
     const services = await createAgentSessionServices({
       cwd: options.workspace,
       agentDir: agentDirectory,
+      ...(options.remoteShell ? { settingsManager: SettingsManager.inMemory() } : {}),
       resourceLoaderOptions: {
         noExtensions: true,
         noSkills: true,
         noPromptTemplates: true,
         noThemes: true,
+        ...(options.remoteShell ? { noContextFiles: true } : {}),
         extensionFactories: [createPolicyExtension(options.workspace, options.getTask, {
           allowShell: options.allowShell
         })]
@@ -81,7 +89,9 @@ export class ControlledPiRuntime {
       ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
       ...(options.tools ? { tools: options.tools } : {}),
       noTools: "builtin",
-      customTools: createSafeToolDefinitions(
+      customTools: options.remoteShell ? [defineTool(createBashToolDefinition(options.workspace, {
+        operations: createApprovalGatedShellOperations(options.remoteShell, () => Promise.resolve(false))
+      }))] : createSafeToolDefinitions(
         options.workspace,
         options.allowShell,
         () => Promise.resolve(false)

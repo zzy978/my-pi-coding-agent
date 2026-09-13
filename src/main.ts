@@ -8,6 +8,7 @@ import { prepareReadyCurrentWorkspace, resolveSetupPlan, setupPreferenceFromCli 
 import { ControlledPiRuntime } from "./runtime/controlled-pi-runtime.js";
 import { runPiInteractive } from "./runtime/pi-interactive.js";
 import { runDoctor } from "./doctor.js";
+import { collectDiagnostics, formatDiagnostics } from "./diagnostics.js";
 import { executeControlledRun } from "./evaluation/runner.js";
 import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
@@ -52,7 +53,8 @@ Options:
       --approve          明确人工确认晋升或撤销
       --revoke-candidate <id> 撤销候选，保留历史记录
       --list-promotions 查看当前仓库晋升与撤销历史
-      --json              JSON output for read-only list/show commands
+      --json              JSON output for diagnostics and read-only list/show commands
+      --diagnostics       只读配置来源、上下文哈希与工具快照（不启动会话）
       --doctor            Check Node, Git, repository, and Pi model configuration
   -h, --help              Show help
   -v, --version           Show version
@@ -218,6 +220,11 @@ export async function run(options: CliOptions): Promise<number> {
     return 0;
   }
   const dataDirectory = getDataDirectory();
+  if (options.diagnostics) {
+    const report = await collectDiagnostics({ workspace: options.workspace, shellEnabled: options.shellEnabled });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatDiagnostics(report));
+    return 0;
+  }
   const directories = await ensureDataDirectories(dataDirectory);
   const managementResult = await handleRunManagement(options, dataDirectory);
   if (managementResult !== undefined) return managementResult;
