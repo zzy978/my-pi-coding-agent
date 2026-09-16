@@ -27,6 +27,7 @@ interface InteractiveHostExtensionOptions {
   dataDirectory: string;
   temporaryDirectory: string;
   releaseSessionLock?: () => void;
+  isPlanning?: () => boolean;
 }
 
 function completed(): Promise<void> {
@@ -45,7 +46,7 @@ function storedObjective(sessionManager: ExtensionContext["sessionManager"]): st
   return undefined;
 }
 
-async function materializeEmptySession(sessionManager: SessionManager): Promise<string> {
+export async function materializeEmptySession(sessionManager: SessionManager): Promise<string> {
   const path = sessionManager.getSessionFile();
   if (!path) throw new Error("Temporary persistent session has no file path");
   const header = sessionManager.getHeader() ?? {
@@ -55,7 +56,8 @@ async function materializeEmptySession(sessionManager: SessionManager): Promise<
     timestamp: new Date().toISOString(),
     cwd: sessionManager.getCwd()
   };
-  await writeFile(path, `${JSON.stringify(header)}\n`, { encoding: "utf8", flag: "wx" });
+  const entries = [header, ...sessionManager.getEntries()];
+  await writeFile(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
   return path;
 }
 
@@ -82,6 +84,10 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       };
 
       const verifyAndReport = async (ctx: ExtensionContext): Promise<void> => {
+        if (options.isPlanning?.()) {
+          ctx.ui.notify("计划模式暂停验证命令；退出计划模式后可使用 /verify。", "info");
+          return;
+        }
         if (verificationRunning) {
           ctx.ui.notify("Verification is already running.", "warning");
           return;
@@ -176,6 +182,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       });
 
       pi.on("agent_settled", async (_event, ctx) => {
+        if (options.isPlanning?.()) return;
         await verifyAndReport(ctx);
       });
 

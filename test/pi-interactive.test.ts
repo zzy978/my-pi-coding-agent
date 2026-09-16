@@ -161,9 +161,9 @@ describe("full Pi interactive runtime", () => {
     try {
       await runtime.session.bindExtensions({ mode: "print" });
       const shell = process.platform === "win32" ? "powershell" : "bash";
-      expect(runtime.session.getActiveToolNames()).toEqual([
-        "read", shell, "grep", "find", "ls", "edit", "write"
-      ]);
+      expect(runtime.session.getActiveToolNames().toSorted()).toEqual([
+        "read", shell, "grep", "find", "ls", "edit", "write", "question", "questionnaire"
+      ].toSorted());
       expect(runtime.services.resourceLoader.getExtensions().errors).toEqual([]);
       expect(runtime.services.resourceLoader.getExtensions().extensions.length).toBeGreaterThanOrEqual(3);
       expect(runtime.services.resourceLoader.getSkills().skills.map((skill) => skill.name)).toContain("demo");
@@ -171,8 +171,31 @@ describe("full Pi interactive runtime", () => {
       expect(runtime.services.resourceLoader.getThemes().themes.map((loadedTheme) => loadedTheme.name)).toContain("project-demo");
       expect(runtime.services.agentDir).toBe(join(dataDirectory, "agent"));
       expect(runtime.session.extensionRunner.getRegisteredCommands().map((command) => command.name)).toEqual(
-        expect.arrayContaining(["task", "allow", "verify-add", "run", "verify", "diff", "status", "sessions", "temp", "experience", "diagnostics"])
+        expect.arrayContaining(["task", "allow", "verify-add", "run", "verify", "diff", "status", "sessions", "temp", "experience", "diagnostics", "plan", "todos", "preset", "handoff"])
       );
+      const originalTools = runtime.session.getActiveToolNames();
+      await runtime.session.prompt("/plan");
+      expect(runtime.session.getActiveToolNames().toSorted()).toEqual(["read", "grep", "find", "ls", "question", "questionnaire"].toSorted());
+      for (const toolName of ["write", "edit", "powershell", "bash", "external-mutating-tool"]) {
+        expect(await runtime.session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: toolName, toolName, input: { command: "echo test", path: "allowed.txt", content: "test" } })).toMatchObject({ block: true });
+      }
+      expect(await runtime.session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "read", toolName: "read", input: { path: "README.md" } })).toBeUndefined();
+      expect(await runtime.session.extensionRunner.emitUserBash({ type: "user_bash", command: "echo test", excludeFromContext: false, cwd: workspace })).toMatchObject({ result: { exitCode: 1 } });
+      await runtime.session.extensionRunner.emit({ type: "agent_settled", messages: [] });
+      await runtime.session.prompt("/preset implement");
+      expect(runtime.session.getActiveToolNames()).not.toContain("write");
+      expect(runtime.session.getActiveToolNames()).not.toContain(shell);
+      await runtime.session.prompt("/verify");
+      await expect(readdir(join(dataDirectory, "reports"))).rejects.toMatchObject({ code: "ENOENT" });
+      await runtime.session.reload();
+      await runtime.session.bindExtensions({ mode: "print" });
+      expect(runtime.session.getActiveToolNames()).not.toContain("write");
+      await runtime.session.prompt("/plan off");
+      expect(runtime.session.getActiveToolNames().toSorted()).toEqual(originalTools.toSorted());
+      await runtime.session.prompt("/preset review");
+      expect(runtime.session.getActiveToolNames()).not.toContain("write");
+      await runtime.session.prompt("/preset off");
+      expect(runtime.session.getActiveToolNames().toSorted()).toEqual(originalTools.toSorted());
       await runtime.session.prompt("/experience list");
       await runtime.session.prompt("/experience off");
       await runtime.session.prompt("/diagnostics");

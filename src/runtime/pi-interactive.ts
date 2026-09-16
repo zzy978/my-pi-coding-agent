@@ -12,7 +12,8 @@ import { createPolicyExtension } from "../policy/policy-extension.js";
 import { createSafeToolDefinitions } from "../policy/safe-tools.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
-import { createInteractiveHostExtension } from "./interactive-host-extension.js";
+import { createInteractiveHostExtension, materializeEmptySession } from "./interactive-host-extension.js";
+import { unlink } from "node:fs/promises";
 import { createExperienceExtension } from "./experience-extension.js";
 import { canonicalWorkspacePath, WorkspaceSessionStore } from "./session-store.js";
 import { getDataDirectories, getDataDirectory } from "./data-dir.js";
@@ -21,6 +22,7 @@ import { createDiagnosticsExtension } from "../diagnostics.js";
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent";
 import { applyModelLimits, configureModelRuntime, configuredModel } from "./model-configuration.js";
 import { limitSessionDuration } from "./session-duration.js";
+import { createWorkflowExtensions } from "./extensions/index.js";
 
 export interface PiInteractiveOptions {
   workspace: WorkspaceInfo;
@@ -78,6 +80,22 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
     if (!runtimeReference.current) throw new Error("Interactive runtime is not ready");
     return runtimeReference.current;
   };
+  const createHandoffSession: AgentSessionRuntime["newSession"] = async (settings) => {
+    const runtime = getRuntimeHost();
+    if (!temporarySessionFiles.has(runtime.session.sessionFile ?? "")) return runtime.newSession(settings);
+    // A temporary directory belongs to the old session and is deleted on shutdown.
+    // Materialize the handoff in the permanent store before switching runtimes.
+    const target = SessionManager.create(options.workspace.workspace, store.sessionDirectory);
+    if (settings?.parentSession) target.newSession({ parentSession: settings.parentSession });
+    await settings?.setup?.(target);
+    const targetPath = await materializeEmptySession(target);
+    const result = await runtime.switchSession(targetPath, {
+      cwdOverride: options.workspace.workspace,
+      ...(settings?.withSession ? { withSession: settings.withSession } : {})
+    });
+    if (result.cancelled) await unlink(targetPath);
+    return result;
+  };
 
   const createRuntime: CreateAgentSessionRuntimeFactory = async ({
     cwd,
@@ -100,11 +118,13 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
     } : undefined;
     try {
       const diagnosticsState: { loader?: ResourceLoader } = {};
+      const workflow = createWorkflowExtensions(agentDir, getRuntimeHost, options.allowShell, createHandoffSession);
       const services = await createAgentSessionServices({
         cwd,
         agentDir,
         resourceLoaderOptions: {
           extensionFactories: [
+            workflow.extension,
             createDiagnosticsExtension(configuration, () => diagnosticsState.loader),
             createPolicyExtension(cwd, () => options.task, {
               allowShell: options.allowShell,
@@ -119,6 +139,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
               pendingSessionObjectives,
               dataDirectory,
               temporaryDirectory: directories.temp,
+              isPlanning: workflow.isPlanning,
               consumeInitialObjectiveOverride: () => {
                 const objective = initialObjectiveOverride;
                 initialObjectiveOverride = undefined;
