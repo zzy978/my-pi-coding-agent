@@ -16,6 +16,7 @@ import { startTaskContainer, stopTaskContainer, containerShell, collectContainer
 export async function runSweTask(options: {
   task: SweTask; image: string; root: string; data: string; config: ModelConfig; phase: "R0" | "B" | "control" | "experience";
   candidate: CandidateSnapshot | null; started: (runId: string) => Promise<void>;
+  expectedConfigurationSha256?: string;
 }): Promise<SweTrial> {
   const { task, root, data, config } = options;
   const name = await startTaskContainer(task, options.image);
@@ -38,6 +39,12 @@ export async function runSweTask(options: {
     const recorder = await RunRecorder.create({ kind: "run", task: spec, runtime,
       workspace: { sourceRoot: cwd, workspace: cwd, baselineCommit: task.base_commit, branch: "container-snapshot", managedWorktree: false },
       allowShell: true, noSession: true, setup: { source: "disabled", commands: [] }, dataDirectory: data });
+    if (options.expectedConfigurationSha256 !== undefined) {
+      const manifest = recorder.manifest;
+      const configuration = { task: manifest.task, agent: manifest.agent, ...(manifest.setup ? { setup: manifest.setup } : {}),
+        policy: manifest.policy, contextFiles: manifest.contextFiles, verifier: manifest.verifier };
+      if (sha256Json(configuration) !== options.expectedConfigurationSha256) throw new Error("SWE run configuration drift before model request");
+    }
     await options.started(recorder.manifest.runId);
     const base = formatTaskPrompt(spec, spec.objective);
     const prompt = options.candidate ? renderCandidatePrompt(base, options.candidate) : base;
