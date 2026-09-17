@@ -60,7 +60,8 @@ function cloneTask(task: TaskSpec): TaskSpec {
     objective: task.objective,
     allowedPaths: [...task.allowedPaths],
     verify: task.verify.map((item) => ({ ...item })),
-    doneWhen: [...task.doneWhen]
+    doneWhen: [...task.doneWhen],
+    ...(task.maxRepairAttempts === undefined ? {} : { maxRepairAttempts: task.maxRepairAttempts })
   };
 }
 

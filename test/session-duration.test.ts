@@ -8,6 +8,7 @@ function sessionFixture() {
   let listener: Parameters<AgentSession["subscribe"]>[0] | undefined;
   const calls: string[] = [];
   const session = {
+    isStreaming: false,
     subscribe: (callback: Parameters<AgentSession["subscribe"]>[0]) => { listener = callback; return () => { listener = undefined; }; },
     abortRetry: () => { calls.push("retry"); },
     abortCompaction: () => { calls.push("compaction"); },
@@ -18,6 +19,22 @@ function sessionFixture() {
 }
 
 describe("interactive task deadline", () => {
+  it("ends the model deadline before host verification and preserves a newer turn timer", async () => {
+    vi.useFakeTimers();
+    const f = sessionFixture();
+    const settled = limitSessionDuration(f.session, 100);
+    f.emit("agent_start");
+    await vi.advanceTimersByTimeAsync(50);
+    settled();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.calls).toEqual([]);
+    f.session.isStreaming = true;
+    f.emit("agent_start");
+    f.emit("agent_settled"); // Late subscriber notification from the previous turn.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.calls).toEqual(["retry", "compaction", "abort"]);
+    f.session.dispose();
+  });
   it("keeps the original deadline across requests and retries", async () => {
     vi.useFakeTimers();
     const f = sessionFixture();

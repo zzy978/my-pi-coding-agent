@@ -17,6 +17,8 @@ export interface TaskSpec {
   allowedPaths: string[];
   verify: VerificationSpec[];
   doneWhen: string[];
+  /** Omitted in historical snapshots: no automatic repair. */
+  maxRepairAttempts?: number;
 }
 
 export class TaskSpecError extends Error {
@@ -66,11 +68,16 @@ export function parseTaskSpec(value: unknown): TaskSpec {
     throw new TaskSpecError("Task file must contain an object");
   }
   const record = value as Record<string, unknown>;
+  if (record.maxRepairAttempts !== undefined && (typeof record.maxRepairAttempts !== "number" ||
+    !Number.isInteger(record.maxRepairAttempts) || record.maxRepairAttempts < 0 || record.maxRepairAttempts > 5)) {
+    throw new TaskSpecError("maxRepairAttempts must be an integer from 0 to 5");
+  }
   return {
     id: record.id === undefined ? randomUUID() : requireNonEmptyString(record.id, "id"),
     objective: requireNonEmptyString(record.objective, "objective"),
     allowedPaths: stringList(record.allowedPaths ?? record.allowed_paths, "allowedPaths", ["**/*"]),
     verify: verificationList(record.verify),
+    ...(record.maxRepairAttempts === undefined ? {} : { maxRepairAttempts: record.maxRepairAttempts }),
     doneWhen: stringList(record.doneWhen ?? record.done_when, "doneWhen", [
       "All configured verification commands pass"
     ])

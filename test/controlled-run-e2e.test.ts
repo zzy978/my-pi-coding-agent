@@ -20,7 +20,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 3 })));
 });
 
-function createFakeRuntime(workspace: string): ControlledPiRuntime {
+function createFakeRuntime(workspace: string, act?: (attempt: number) => Promise<void>, stopReason = "stop"): ControlledPiRuntime {
   const listeners = new Set<(event: AgentSessionEvent) => void>();
   let stats: SessionStats = {
     sessionFile: undefined,
@@ -50,13 +50,18 @@ function createFakeRuntime(workspace: string): ControlledPiRuntime {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
+      abortRetry: () => undefined,
+      abortCompaction: () => undefined,
+      abort: () => Promise.resolve(),
       prompt: async (text: string) => {
         capturedPrompts.push(text);
         emit({ type: "agent_start" } as AgentSessionEvent);
         emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hidden" } } as AgentSessionEvent);
         emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "write", args: { path: "result.txt", content: "done\nSECRET" } } as AgentSessionEvent);
         await writeFile(join(workspace, "result.txt"), "done\n", "utf8");
+        await act?.(capturedPrompts.length);
         emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "write", isError: false, result: { content: [{ type: "text", text: "Wrote result.txt\nBearer fake-tool-result-secret\u001b[2J\n" + '{"apiKey":"fake-json-result-key"}\n' + "x".repeat(2_000) }] } } as AgentSessionEvent);
+        emit({ type: "message_end", message: { role: "assistant", stopReason } } as AgentSessionEvent);
         emit({ type: "agent_settled" } as AgentSessionEvent);
         stats = {
           ...stats,
@@ -75,6 +80,130 @@ function createFakeRuntime(workspace: string): ControlledPiRuntime {
 }
 
 describe("controlled run and replay lifecycle", () => {
+  it("repairs a failed verifier in the same run and retains the first failure evidence", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-repair-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const task = parseTaskSpec({ objective: "修复 result.txt", maxRepairAttempts: 2,
+      verify: ["node -e \"process.exit(require('fs').readFileSync('result.txt','utf8').trim()==='fixed'?0:1)\""] });
+    const result = await executeControlledRun({ kind: "run", task, workspace, allowShell: false, noSession: true,
+      setup: { source: "disabled", commands: [] }, dataDirectory,
+      runtime: createFakeRuntime(workspace.workspace, async (attempt) => {
+        if (attempt === 2) await writeFile(join(workspace.workspace, "result.txt"), "fixed");
+      }) });
+    expect(result.result.status).toBe("verification_passed");
+    expect(capturedPrompts).toHaveLength(2);
+    expect(capturedPrompts[1]).toContain("exitCode");
+    expect(JSON.parse(await readFile(join(result.directory, "verification-0.json"), "utf8"))).toMatchObject({ success: false });
+    expect(JSON.parse(await readFile(join(result.directory, "verification-1.json"), "utf8"))).toMatchObject({ success: true });
+    const stored = await loadRunBundle(result.manifest.runId, dataDirectory);
+    expect(stored.manifest.task.content).toMatchObject({ maxRepairAttempts: 2 });
+    await discardManagedWorkspace(workspace);
+  });
+
+  it.each([undefined, 0, 2])("bounds unsuccessful repairs with maxRepairAttempts=%s", async (limit) => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-repair-limit-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const task = parseTaskSpec({ objective: "失败验收", ...(limit === undefined ? {} : { maxRepairAttempts: limit }),
+      verify: ["node -e \"process.exit(1)\""] });
+    const result = await executeControlledRun({ kind: "run", task, workspace, allowShell: false, noSession: true,
+      setup: { source: "disabled", commands: [] }, dataDirectory, runtime: createFakeRuntime(workspace.workspace) });
+    expect(capturedPrompts).toHaveLength(1 + (limit ?? 0));
+    expect(result.result.status).toBe("verification_failed");
+    await discardManagedWorkspace(workspace);
+  });
+
+  it.each(["error", "abort"])("preserves failure evidence if repair ends in %s", async (failure) => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-repair-error-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const controller = new AbortController();
+    const task = parseTaskSpec({ objective: "错误不能判成功", maxRepairAttempts: 2, verify: ["node -e \"process.exit(1)\""] });
+    const result = await executeControlledRun({ kind: "run", task, workspace, allowShell: false, noSession: true,
+      signal: controller.signal, setup: { source: "disabled", commands: [] }, dataDirectory,
+      runtime: createFakeRuntime(workspace.workspace, (attempt) => {
+        if (attempt === 2) {
+          if (failure === "abort") controller.abort();
+          else throw new Error("simulated model failure");
+        }
+        return Promise.resolve();
+      }) });
+    expect(capturedPrompts).toHaveLength(2);
+    expect(result.result.status).toBe("execution_failed");
+    expect(result.result.verification?.success).toBe(false);
+    expect(JSON.parse(await readFile(join(result.directory, "verification-0.json"), "utf8"))).toMatchObject({ success: false });
+    await expect(readFile(join(result.directory, "verification-1.json"), "utf8")).rejects.toThrow();
+    await discardManagedWorkspace(workspace);
+  });
+  it("retains a completed passing verification when cancelled during the verification stage", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-verifier-cancel-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await executeControlledRun({ kind: "run", workspace, allowShell: false, noSession: true,
+        task: parseTaskSpec({ objective: "验证期间取消", maxRepairAttempts: 2, verify: ["node -e \"setTimeout(()=>process.exit(0),200)\""] }),
+        signal: controller.signal, setup: { source: "disabled", commands: [] }, dataDirectory,
+        onStatus: (status) => { if (status.endsWith(": verification")) timer = setTimeout(() => controller.abort(), 50); },
+        runtime: createFakeRuntime(workspace.workspace) });
+      expect(controller.signal.aborted).toBe(true);
+      expect(result.result.status).toBe("verification_passed");
+      expect(capturedPrompts).toHaveLength(1);
+      await expect(loadRunBundle(result.manifest.runId, dataDirectory)).resolves.toBeDefined();
+    } finally {
+      clearTimeout(timer);
+      await discardManagedWorkspace(workspace);
+    }
+  });
+  it("shares the model phase deadline across repair prompts", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-repair-budget-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const runtime = createFakeRuntime(workspace.workspace, () => new Promise((resolve) => setTimeout(resolve, 650)));
+    Object.defineProperty(runtime, "modelConfig", { value: {
+      requestTimeoutMs: 1_000, maxOutputTokens: 1024, taskTimeoutMs: 1_000, baseUrlSha256: "0".repeat(64)
+    } });
+    const result = await executeControlledRun({ kind: "run", workspace, allowShell: false, noSession: true,
+      task: parseTaskSpec({ objective: "累计模型预算", maxRepairAttempts: 5, verify: ["node -e \"process.exit(1)\""] }),
+      setup: { source: "disabled", commands: [] }, dataDirectory, runtime });
+    expect(result.result.status).toBe("execution_failed");
+    expect(result.result.errors.join("\n")).toContain("timed out");
+    expect(capturedPrompts).toHaveLength(2);
+    await discardManagedWorkspace(workspace);
+  });
+  it.each(["error", "aborted", "length"])("does not verify or repair a model ending with %s without throwing", async (reason) => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-controlled-model-stop-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const workspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const result = await executeControlledRun({ kind: "run", workspace, allowShell: false, noSession: true,
+      task: parseTaskSpec({ objective: "模型异常不判成功", maxRepairAttempts: 2, verify: ["node -e \"process.exit(0)\""] }),
+      setup: { source: "disabled", commands: [] }, dataDirectory,
+      runtime: createFakeRuntime(workspace.workspace, undefined, reason) });
+    expect(result.result.status).toBe("execution_failed");
+    expect(result.result.verification).toBeUndefined();
+    expect(capturedPrompts).toHaveLength(1);
+    await discardManagedWorkspace(workspace);
+  });
   it("persists a redacted policy failure correlated with the tool call", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-policy-trace-"));
     temporaryDirectories.push(parent);

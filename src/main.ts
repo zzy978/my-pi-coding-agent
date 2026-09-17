@@ -27,12 +27,13 @@ Options:
   -t, --task <text>       Start with a task objective
       --task-file <path>  Load a YAML or JSON TaskSpec
       --verify <command>  Add a verification command (repeatable)
+      --max-repair-attempts <0..5> 验证失败后自动修复上限，默认 2；0 关闭
       --setup <command>   Run a setup command before the TUI starts (repeatable)
       --no-setup          Disable setup commands
   -c, --continue          Continue the latest session for the current directory
       --no-session        Do not persist the Pi session
       --no-shell          Disable the Shell tool (enabled by default)
-      --record            Run one headless, reproducible prompt and save evaluation artifacts
+      --record            运行受控任务及有限修复，保存评测产物
       --list-runs         List recorded controlled runs
       --show-run <runId>  Show a recorded manifest and result
       --replay <runId>    Replay a run from its recorded baseline in a fresh worktree
@@ -78,6 +79,7 @@ async function taskFromOptions(options: CliOptions) {
     }
     for (const command of options.verifyCommands) task.verify.push({ command, timeoutMs: 120_000 });
   }
+  task.maxRepairAttempts = options.maxRepairAttempts ?? task.maxRepairAttempts ?? 2;
   return task;
 }
 

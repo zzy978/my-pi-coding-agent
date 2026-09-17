@@ -118,6 +118,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
     } : undefined;
     try {
       const diagnosticsState: { loader?: ResourceLoader } = {};
+      let clearTaskTimer: () => void = () => undefined;
       const workflow = createWorkflowExtensions(agentDir, getRuntimeHost, options.allowShell, createHandoffSession);
       const services = await createAgentSessionServices({
         cwd,
@@ -140,6 +141,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
               dataDirectory,
               temporaryDirectory: directories.temp,
               isPlanning: workflow.isPlanning,
+              onAgentSettled: () => clearTaskTimer(),
               consumeInitialObjectiveOverride: () => {
                 const objective = initialObjectiveOverride;
                 initialObjectiveOverride = undefined;
@@ -171,7 +173,7 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
           () => Promise.resolve(true)
         )
       });
-      limitSessionDuration(created.session, modelConfig.taskTimeoutMs);
+      clearTaskTimer = limitSessionDuration(created.session, modelConfig.taskTimeoutMs);
       return {
         ...created,
         services,

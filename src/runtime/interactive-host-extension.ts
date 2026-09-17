@@ -11,6 +11,8 @@ import { writeRunReport } from "../report/report.js";
 import type { TaskSpec } from "../task/task-spec.js";
 import { INTERACTIVE_TASK_OBJECTIVE } from "../task/task-spec.js";
 import { formatVerificationSummary, runVerification } from "../verifier/verifier.js";
+import { formatRepairPrompt, repairStopMessage, repairStopReason } from "../verifier/repair.js";
+import { sanitizeVerificationReport } from "../evaluation/redaction.js";
 import type { WorkspaceInfo } from "../workspace/git.js";
 import { getDiff } from "../workspace/git.js";
 import { SessionPicker } from "../tui/session-picker.js";
@@ -28,6 +30,7 @@ interface InteractiveHostExtensionOptions {
   temporaryDirectory: string;
   releaseSessionLock?: () => void;
   isPlanning?: () => boolean;
+  onAgentSettled?: () => void;
 }
 
 function completed(): Promise<void> {
@@ -67,6 +70,29 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
     hidden: true,
     factory: (pi) => {
       let verificationRunning = false;
+      let verificationFinished = Promise.resolve();
+      let generation = 0;
+      let attempts = 0;
+      let normalEnd = false;
+      let chainTask = structuredClone(options.task);
+      let continuation: ReturnType<typeof setTimeout> | undefined;
+      const invalidate = (resetBudget = true): void => {
+        generation += 1;
+        if (resetBudget) attempts = 0;
+        normalEnd = false;
+        clearTimeout(continuation);
+        continuation = undefined;
+        if (resetBudget) chainTask = structuredClone(options.task);
+      };
+      pi.on("input", (event) => {
+        // Other input handlers may transform the text before this handler sees it.
+        // Extension-generated input must never replenish the current repair budget.
+        invalidate(event.source !== "extension");
+      });
+      pi.on("agent_end", (event) => {
+        const last = [...event.messages].reverse().find((message) => message.role === "assistant");
+        normalEnd = last?.role === "assistant" && last.stopReason === "stop";
+      });
 
       const persistObjective = async (ctx: ExtensionContext): Promise<void> => {
         const path = ctx.sessionManager.getSessionFile();
@@ -83,7 +109,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
         });
       };
 
-      const verifyAndReport = async (ctx: ExtensionContext): Promise<void> => {
+      const verifyAndReport = async (ctx: ExtensionContext, automatic = false): Promise<void> => {
         if (options.isPlanning?.()) {
           ctx.ui.notify("计划模式暂停验证命令；退出计划模式后可使用 /verify。", "info");
           return;
@@ -92,12 +118,23 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
           ctx.ui.notify("Verification is already running.", "warning");
           return;
         }
+        if (!automatic && !ctx.isIdle()) {
+          ctx.ui.notify("请等待当前执行结束后再验证。", "warning");
+          return;
+        }
+        const token = generation;
+        const sessionId = ctx.sessionManager.getSessionId();
+        const task = structuredClone(automatic ? chainTask : options.task);
+        const current = () => token === generation && sessionId === ctx.sessionManager.getSessionId() &&
+          JSON.stringify(task) === JSON.stringify(options.task) && !options.isPlanning?.();
         verificationRunning = true;
+        let releaseVerification!: () => void;
+        verificationFinished = new Promise<void>((resolve) => { releaseVerification = resolve; });
         ctx.ui.setStatus("pi-tui-verifier", "Verifying…");
         try {
           const verification = await runVerification(
             options.workspace.workspace,
-            options.task,
+            task,
             (command, index, total) => ctx.ui.setStatus(
               "pi-tui-verifier",
               `Verifying ${index + 1}/${total}: ${command}`
@@ -108,26 +145,46 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
           const paths = await writeRunReport({
             version: 1,
             createdAt: new Date().toISOString(),
-            task: options.task,
+            task,
             workspace: options.workspace,
             sessionId: ctx.sessionManager.getSessionId(),
             ...(sessionFile ? { sessionFile } : {}),
             ...(ctx.model ? { model: { provider: ctx.model.provider, id: ctx.model.id } } : {}),
             verification
           }, options.dataDirectory);
+          if (!current()) return;
           ctx.ui.notify(
-            `${formatVerificationSummary(verification)}\nReport: ${paths.markdownPath}`,
+            `${formatVerificationSummary(sanitizeVerificationReport(verification))}\nReport: ${paths.markdownPath}`,
             verification.success ? "info" : "warning"
           );
           ctx.ui.setStatus(
             "pi-tui-verifier",
             verification.success ? "Last verification passed" : "Last verification incomplete/failed"
           );
+          if (automatic && normalEnd) {
+            const limit = task.maxRepairAttempts ?? 0;
+            const reason = repairStopReason(verification, attempts, limit);
+            if (reason) {
+              if (reason !== "passed") ctx.ui.notify(repairStopMessage(reason), "warning");
+              return;
+            }
+            const feedback = formatRepairPrompt(task, verification, attempts + 1, limit);
+            // Let settled subscribers (including the task timer) finish before starting another run.
+            continuation = setTimeout(() => {
+              continuation = undefined;
+              if (!current() || !normalEnd || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+              attempts += 1;
+              normalEnd = false;
+              ctx.ui.notify(`验证未通过，开始自动修复 ${attempts}/${limit}。`, "info");
+              pi.sendUserMessage(feedback, { deliverAs: "followUp" });
+            }, 0);
+          }
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
           ctx.ui.setStatus("pi-tui-verifier", "Verification failed to run");
         } finally {
           verificationRunning = false;
+          releaseVerification();
         }
       };
 
@@ -149,6 +206,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       });
 
       pi.on("session_start", async (event, ctx) => {
+        invalidate();
         const path = ctx.sessionManager.getSessionFile();
         const sessionId = ctx.sessionManager.getSessionId();
         const sessionOverride = options.pendingSessionObjectives.get(sessionId);
@@ -161,6 +219,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
         else if (event.reason === "new" || event.reason === "resume") {
           options.task.objective = INTERACTIVE_TASK_OBJECTIVE;
         }
+        chainTask = structuredClone(options.task);
         if (path && !options.temporarySessionFiles.has(path)) {
           try {
             await persistObjective(ctx);
@@ -173,6 +232,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       });
 
       pi.on("session_shutdown", async (event, ctx) => {
+        invalidate();
         if (event.reason === "reload") return;
         options.releaseSessionLock?.();
         const path = ctx.sessionManager.getSessionFile();
@@ -182,8 +242,29 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
       });
 
       pi.on("agent_settled", async (_event, ctx) => {
+        options.onAgentSettled?.();
         if (options.isPlanning?.()) return;
-        await verifyAndReport(ctx);
+        if (!normalEnd) return;
+        const token = generation;
+        if (verificationRunning) await verificationFinished;
+        if (token !== generation || !normalEnd || options.isPlanning?.()) return;
+        await verifyAndReport(ctx, true);
+      });
+
+      pi.registerCommand("repair", {
+        description: "自动修复：/repair [status|off|0..5]",
+        handler: (args, ctx) => {
+          const value = args.trim();
+          if (value === "off" || /^[0-5]$/.test(value)) {
+            options.task.maxRepairAttempts = value === "off" ? 0 : Number(value);
+            invalidate();
+          } else if (value && value !== "status") {
+            ctx.ui.notify("用法：/repair [status|off|0..5]", "warning");
+            return completed();
+          }
+          ctx.ui.notify(`自动修复上限：${options.task.maxRepairAttempts ?? 0} 次；当前已修复：${attempts} 次。`, "info");
+          return completed();
+        }
       });
 
       pi.registerCommand("task", {
@@ -195,6 +276,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             return;
           }
           options.task.objective = objective;
+          invalidate();
           await persistObjective(ctx);
           ctx.ui.setStatus("pi-tui-task", `Task: ${objective}`);
           ctx.ui.notify(`Task objective updated: ${objective}`, "info");
@@ -218,6 +300,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             return completed();
           }
           options.task.verify.push({ command, timeoutMs: 120_000 });
+          invalidate();
           ctx.ui.notify(`Verification command added: ${command}`, "info");
           return completed();
         }
@@ -230,6 +313,7 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
             ctx.ui.notify("Set an objective with /task <objective> first.", "warning");
             return completed();
           }
+          invalidate();
           pi.sendUserMessage(options.task.objective);
           return completed();
         }
@@ -237,7 +321,10 @@ export function createInteractiveHostExtension(options: InteractiveHostExtension
 
       pi.registerCommand("verify", {
         description: "Run host verification commands",
-        handler: async (_args, ctx) => verifyAndReport(ctx)
+        handler: async (_args, ctx) => {
+          invalidate(false);
+          await verifyAndReport(ctx);
+        }
       });
 
       pi.registerCommand("diff", {

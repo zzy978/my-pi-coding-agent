@@ -150,9 +150,28 @@ doneWhen:
 
 没有配置验证命令时，运行结果会被标记为“不完整”，不会被当作成功。
 
+### 验证失败后自动修复
+
+普通交互和新建 `--record` 任务默认最多自动修复 **2 次**。Agent 正常结束后，宿主执行全部配置的验证命令；若有命令正常退出但结果失败，则将脱敏、限长的失败输出反馈给同一 agent，修复后重新验证。最多执行首次任务加 2 轮修复，不限制为 3 次 API 请求。
+
+```powershell
+picode . --task "修复解析器" --verify "npm test" --verify "npm run lint" --max-repair-attempts 2
+picode . --max-repair-attempts 0
+```
+
+`--max-repair-attempts` 范围为 0–5，0 表示关闭；也可在 YAML/JSON TaskSpec 顶层配置 `maxRepairAttempts: 2`，CLI 设置优先。交互中可用 `/repair off` 取消后续自动修复，或 `/repair 2` 设置上限，更新设置不会立即启动模型，后续正常执行结束后按新设置处理；不回滚已完成的修改或终止已经启动的验证命令。手动 `/verify` 只检查，不启动模型修复。
+
+验证成功即停止。达到上限、模型错误或用户中止、验证超时或进程启动异常、Git 审计不可用、存在受保护文件变更时停止自动修复。新输入、任务配置变化和会话切换会使旧任务待发送的修复反馈失效；计划模式暂停验证和修复。自动修复会产生额外模型请求及费用。
+
+受控运行在宿主验证期间收到取消信号时，已启动的验证按自身超时完成，保留实际通过或失败结果，并阻止后续模型修复；取消不回滚文件修改。
+
+修复沿用已有工具权限和验证命令，不自动发现或添加测试、lint，也不放宽验收条件。测试文件仍可被文件工具修改，因此不能把验证通过当成需求全覆盖或防作弊保证；`doneWhen` 仍为提示条件。
+
+受控运行把修复上限纳入任务快照及哈希，replay 和配对实验恢复该值，不允许用 CLI 覆盖。旧 manifest 没有 `maxRepairAttempts` 时保持零次修复，不补写字段或改变原哈希。各轮结果保存在 `verification-0.json`、`verification-1.json` 等文件中，trace 含轮次、修复开始和停止原因；`verification.json` 保存最后一次实际验证，模型失败时最终状态仍为执行失败。受控运行的模型任务时限由首次执行和所有修复共享，不包含 setup 和宿主验证耗时；交互模式沿用每次 agent 执行的时限及有限修复次数。SWE-bench 官方评分路径不参与自动修复，不向模型回传隐藏评分测试。
+
 ## 可复现评测与回放
 
-受控运行是一次性的 `prompt → verifier → evidence` 流程。它始终从干净源仓库创建新的受管 worktree，不进入交互式 TUI：
+受控运行采用 `prompt → verifier → 有限修复 → verifier → evidence` 流程。它始终从干净源仓库创建新的受管 worktree，不进入交互式 TUI：
 
 ```bash
 pi-agent-tui /path/to/repository --record --task-file examples/task.yaml --no-session
@@ -282,6 +301,7 @@ pi-agent-tui --revoke-candidate CANDIDATE_ID --approve
 | `/sessions` | 打开选择器并切换当前工作目录的会话 |
 | `/sessions <session-id>` | 按完整 ID 或唯一 ID 前缀切换会话 |
 | `/verify` | 执行验证命令并生成报告；Git 不可用时标记变更审计缺失 |
+| `/repair [status\|off\|0..5]` | 查看或设置自动修复上限；`off` 取消后续自动修复 |
 | `/diff` | 查看所属仓库的变更文件和 diff 统计；Git 不可用时提示原因 |
 | `/status` | 查看宿主任务、工作区、模型与会话；用量使用 Pi 的 `/session` 查看 |
 | `/diagnostics [--json]` | 查看当前配置来源、实际模型与上限、上下文/提示哈希、已加载扩展和活动工具 |

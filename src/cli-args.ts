@@ -14,6 +14,7 @@ export interface CliOptions {
   task?: string;
   taskFile?: string;
   verifyCommands: string[];
+  maxRepairAttempts?: number;
   setupCommands: string[];
   noSetup: boolean;
   allowedPaths: string[];
@@ -54,6 +55,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let task: string | undefined;
   let taskFile: string | undefined;
   const verifyCommands: string[] = [];
+  let maxRepairAttempts: number | undefined;
   const setupCommands: string[] = [];
   let noSetup = false;
   const allowedPaths: string[] = [];
@@ -104,6 +106,15 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         verifyCommands.push(takeValue(args, index, arg));
         index += 1;
         break;
+      case "--max-repair-attempts": {
+        const value = takeValue(args, index, arg);
+        if (maxRepairAttempts !== undefined || !/^[0-5]$/.test(value)) {
+          throw new CliUsageError("--max-repair-attempts 必须为 0–5，且只能指定一次");
+        }
+        maxRepairAttempts = Number(value);
+        index += 1;
+        break;
+      }
       case "--setup":
         setupCommands.push(takeValue(args, index, arg));
         index += 1;
@@ -236,6 +247,9 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   }
   if (positionalWorkspace) workspace = positionalWorkspace;
   const managementModes = [listRuns, Boolean(showRunId), Boolean(replayRunId)].filter(Boolean).length;
+  if (maxRepairAttempts !== undefined && (managementModes || diagnostics || doctor || learningFlag)) {
+    throw new CliUsageError("--max-repair-attempts 仅支持普通交互或新的 --record 任务");
+  }
   if (diagnostics && (managementModes || record || doctor || learningFlag || task || taskFile || verifyCommands.length ||
     setupCommands.length || noSetup || allowedPaths.length || legacyInPlace || continueSession || noSession)) {
     throw new CliUsageError("--diagnostics 不能与执行参数或其他运行模式组合");
@@ -302,6 +316,7 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     ...(task ? { task } : {}),
     ...(taskFile ? { taskFile: resolve(cwd, taskFile) } : {}),
     verifyCommands,
+    ...(maxRepairAttempts === undefined ? {} : { maxRepairAttempts }),
     setupCommands,
     noSetup,
     allowedPaths,
