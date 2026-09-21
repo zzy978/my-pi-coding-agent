@@ -6,7 +6,6 @@ import { sha256Json, sha256Text, type RunUsage } from "../evaluation/schema.js";
 import { writeJsonAtomic } from "../evaluation/store.js";
 import { ensureDataDirectories } from "../runtime/data-dir.js";
 import { analyzeRun } from "../experience/service.js";
-import { synthesizeExperience } from "../experience/synthesizer.js";
 import { redactSensitiveText } from "../evaluation/redaction.js";
 import { publicTask, freezeGuidance, assertPhaseReady, assertResumeB, summarizeRounds, regradeIncompleteTrials, type SweTask, type SweTrial, type FrozenGuidance } from "./swe-mini.js";
 import { bridge, prepareImages, preflightTasks, scorePatch, EVALUATOR_IMAGE } from "./swe-container.js";
@@ -150,8 +149,7 @@ async function main(): Promise<void> {
         batch.synthesis[trial.instanceId] = { id: null, status: "skipped-invalid-execution", usage: null };
         batch.guidance[trial.instanceId] = freezeGuidance([]);
       } else {
-        const experience = await analyzeRun(trial.runId, data, { reviewMode: "proposer", minSuccessToolCalls: 0,
-          synthesize: (input) => synthesizeExperience({ ...input, modelConfig: config }) });
+        const experience = await analyzeRun(trial.runId, data, { reviewMode: "proposer", minSuccessToolCalls: 0, modelConfig: config });
         batch.synthesis[trial.instanceId] = { id: experience.id, status: experience.synthesis.status, usage: experience.synthesis.usage ?? null };
         batch.guidance[trial.instanceId] = freezeGuidance(experience.candidates);
       }

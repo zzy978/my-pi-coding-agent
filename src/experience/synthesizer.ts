@@ -37,7 +37,8 @@ export async function synthesizeExperience(input: SynthesisInput, createRuntime?
   return completeExperienceStage(input, { observation: input.observation, evidence: input.evidence }, SYSTEM_PROMPT, createRuntime);
 }
 
-export async function completeExperienceStage(input: SynthesisInput, material: unknown, systemPrompt: string, createRuntime?: RuntimeFactory, maximum = 64_000): Promise<SynthesisResponse> {
+export async function completeExperienceStage(input: Pick<SynthesisInput, "model" | "dataDirectory" | "modelConfig" | "reasoning">,
+  material: unknown, systemPrompt: string, createRuntime?: RuntimeFactory, maximum = 64_000): Promise<SynthesisResponse> {
   const payload = JSON.stringify(material);
   if (payload.length > maximum) throw new Error(`Experience material exceeds the ${maximum} character size limit`);
   const controller = new AbortController();

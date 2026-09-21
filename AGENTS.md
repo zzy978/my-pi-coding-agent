@@ -189,3 +189,13 @@ npm run dev -- --revoke-candidate CANDIDATE_ID --approve
 - 记录器保留最多 1000 字符的脱敏工具文本摘要，排除图片、任意 details 和模型思维链；经验材料仍限制 80 条/32000 字符，优先保留验证与失败恢复。旧 trace 没有记录的动作结果不可推测。
 - 现有实验/晋升门槛不变：计费、token、耗时虽可查看，但效率变化不单独触发 observed_improvement。对同批候选共享实验结果的比较不能改变晋升对候选 ID 和跨任务证据的要求。
 - 本阶段没有常驻后台队列、自动 TUI 订阅、自动经验注入或 skill 安装。复盘入口可由外部后台调用；重复分析产生新记录。真实模型收益需额外的真实实验，不得用模拟测试证明 critic 有效。
+
+
+## 经验检索默认集成更新（2026-09-21，覆盖旧“日常仅手动注入”描述）
+
+- `analyzeRun` 保存经验后自动生成独立检索索引；compare 的 proposer/critic 经验分别绑定。索引位于 `experiences/<id>/retrieval/`，不改变原经验和候选哈希；失败保留状态，不能据此宣称全部经验都已有可用描述。
+- `retrieval.ts`、`retrieval-prompts.ts`、`retrieval-service.ts` 提供通用公开任务选择；`retrieval-index.ts` 管理有版本和哈希绑定的 sidecar。仅 initial + direct + absent 可以注入，最多2条/9000字符，去重并允许零注入；后续阶段经验暂不自动触发。
+- 普通 TUI 默认 auto，仅使用同仓库有效晋升池。`/experience use` 限定候选但不绕过筛选，`off` 停用，`auto` 恢复；计划模式跳过。选择完成后复核晋升、元数据、任务、模型、会话和状态版本，过期结果不注入。会话切换恢复 auto。
+- 普通任务选择审计位于 `reports/retrieval/`，记录任务哈希、有界引句/理由、索引用量和判定用量；引句可能覆盖短任务全文。不单独保存原始任务字段、完整配置、凭据或思维链。旧合格候选首次使用补索引，失败不静默重试。
+- 新 SWE holdout 默认目录 `swe-holdout-v2`；catalog 不请求模型，prepare/run 首次冻结 V2 索引和选择。后续运行复用；control 恒为空。旧 V1 批次及 record/replay/显式候选实验保持原冻结语义，不自动接入日常检索。
+- 索引及适用性使用独立 synthesis 上限并增加调用成本。mock/本机 HTTP 测试只证明接线和边界，不证明模型适用性判断正确或真实修复收益。

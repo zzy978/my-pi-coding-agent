@@ -21,6 +21,10 @@ const ranked = (items: LibraryEntry[]) => items.map((item, index) => ({ id: item
 const output = (decisions: unknown[]) => JSON.stringify({ decisions });
 
 describe("SWE V2 检索卡", () => {
+  it("公开索引关键词允许普通代码赋值，但仍拒绝凭据", () => {
+    expect(parseSearchCard({ ...card(entry()), keywords: ["resolved=false"] }, entry()).keywords).toEqual(["resolved=false"]);
+    expect(() => parseSearchCard({ ...card(entry()), keywords: ["api_key=sk-test-secret-123456789"] }, entry())).toThrow();
+  });
   it("规范原文包含标题、条件、禁忌与未改写正文", () => {
     expect(sourceText(entry("a", "  原文\n保持缩进  "))).toBe("输入校验\n用户名校验失败\n仅网络连接失败\n  原文\n保持缩进  ");
     expect(parseSearchCard(card(entry()), entry()).candidateId).toBe("a");
@@ -43,6 +47,9 @@ describe("SWE V2 检索卡", () => {
 });
 
 describe("SWE V2 BM25", () => {
+  it("普通任务无需 SWE 仓库与实例字段", () => {
+    expect(rankGuidance({ problem_statement: "用户名长度限制" } as SweTask, [entry()], [card(entry())])).toMatchObject([{ id: "a" }]);
+  });
   it("纯中文问题可匹配连续中文关键词，并跳过无卡条目", () => {
     const items = [entry(), entry("b")];
     expect(rankGuidance({ ...task, problem_statement: "用户名长度限制失效" }, items, [card(items[0]!)])).toMatchObject([{ id: "a" }]);

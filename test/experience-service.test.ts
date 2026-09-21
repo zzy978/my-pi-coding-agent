@@ -8,6 +8,9 @@ import { createRunDirectory, writeRunResult } from "../src/evaluation/store.js";
 import { analyzeRun } from "../src/experience/service.js";
 import { loadCandidate, loadExperience, listExperiences, saveExperience } from "../src/experience/store.js";
 import { parseExperienceBundle } from "../src/experience/schema.js";
+import type { ExperienceBundle } from "../src/experience/schema.js";
+import { handleLearningManagement } from "../src/learning-cli.js";
+import { parseCliArgs } from "../src/cli-args.js";
 
 const directories: string[] = [];
 const servers: Server[] = [];
@@ -72,6 +75,47 @@ async function recordActions(fixture: Awaited<ReturnType<typeof sourceRun>>, rec
 }
 
 describe("outcome-independent retrospectives", () => {
+  it("indexes the saved experience and keeps indexing failure separate from valid experience storage", async () => {
+    const fixture = await sourceRun();
+    const indexed: string[] = [];
+    const bundle = await analyzeRun("source", fixture.dataDirectory, {
+      synthesize: () => Promise.resolve({ text: proposal() }),
+      index: (stored: ExperienceBundle) => { indexed.push(stored.id); return Promise.resolve(); }
+    });
+    expect(indexed).toEqual([bundle.id]);
+    expect(await loadExperience(bundle.id, fixture.dataDirectory)).toEqual(bundle);
+    const retrieval = join(fixture.dataDirectory, "experiences", bundle.id, "retrieval");
+    await mkdir(retrieval);
+    await writeFile(join(retrieval, `${bundle.candidates[0]!.id}.json`), '{"apiKey":"sk-cli-private-value"}');
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await expect(handleLearningManagement(parseCliArgs(["--show-experience", bundle.id, "--json"]), fixture.dataDirectory)).resolves.toBe(0);
+    const shown = JSON.parse(String(output.mock.lastCall?.[0])) as { id: string; retrievalIndexes: Array<{ status: string; error: string }> };
+    expect(shown.id).toBe(bundle.id);
+    expect(shown.retrievalIndexes[0]?.status).toBe("unavailable");
+    expect(JSON.stringify(shown)).not.toContain("sk-cli-private-value");
+    output.mockRestore();
+
+    const another = await sourceRun();
+    const retained = await analyzeRun("source", another.dataDirectory, {
+      synthesize: () => Promise.resolve({ text: proposal() }),
+      index: () => Promise.reject(new Error("index storage unavailable"))
+    });
+    expect(retained.candidates).toHaveLength(1);
+    expect(await loadExperience(retained.id, another.dataDirectory)).toEqual(retained);
+  });
+
+  it("indexes proposer and critic candidate identities independently in compare mode", async () => {
+    const fixture = await sourceRun();
+    const indexed: Array<{ id: string; candidates: string[] }> = [];
+    const bundle = await analyzeRun("source", fixture.dataDirectory, { reviewMode: "compare",
+      synthesize: () => Promise.resolve({ text: proposal() }),
+      review: () => Promise.resolve({ text: JSON.stringify({ decisions: [{ candidateIndex: 0, verdict: "accept", reason: "保留用于评测", evidenceRefs: ["result.json#/status"] }] }) }),
+      index: (stored: ExperienceBundle) => { indexed.push({ id: stored.id, candidates: stored.candidates.map((item) => item.id) }); return Promise.resolve(); }
+    });
+    expect(indexed.map((item) => item.id)).toEqual([bundle.review!.proposerExperienceId, bundle.id]);
+    expect(indexed[0]!.candidates[0]).not.toBe(indexed[1]!.candidates[0]);
+  });
+
   it("keeps late recovery evidence within material limits and redacts structured tool secrets", async () => {
     const fixture = await sourceRun({ passing: true });
     const events: Array<{ type: string; data: Record<string, unknown> }> = [];
@@ -206,7 +250,7 @@ describe("critic review of fixed proposals", () => {
     vi.stubEnv("PICODE_MODEL_API_KEY", "fake-local-review-key");
     vi.stubEnv("PICODE_MODEL_MAX_OUTPUT_TOKENS", "1");
     vi.stubEnv("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", "123");
-    const bundle = await analyzeRun("source", fixture.dataDirectory, { reviewMode: "critic" });
+    const bundle = await analyzeRun("source", fixture.dataDirectory, { reviewMode: "critic", index: () => Promise.resolve() });
     expect(bundle.synthesis.status).toBe("completed");
     expect(bundle.review?.status).toBe("completed");
     expect(bundle.candidates).toHaveLength(1);

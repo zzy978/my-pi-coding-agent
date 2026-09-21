@@ -8,6 +8,7 @@ import {
   type CreateAgentSessionRuntimeFactory
 } from "@earendil-works/pi-coding-agent";
 import { listActiveCandidates } from "../experience/promotions.js";
+import { selectTaskExperience } from "../experience/retrieval-service.js";
 import { createPolicyExtension } from "../policy/policy-extension.js";
 import { createSafeToolDefinitions } from "../policy/safe-tools.js";
 import type { TaskSpec } from "../task/task-spec.js";
@@ -61,8 +62,8 @@ async function initialSessionManager(
 
 export async function createPiInteractiveRuntime(options: PiInteractiveOptions): Promise<AgentSessionRuntime> {
   const configuration: ModelConfigSnapshot = options.modelConfig
-    ? { config: options.modelConfig, sources: {} } : readModelConfigWithSources();
-  const modelConfig = configuration.config;
+    ? { config: { ...options.modelConfig }, sources: {} } : readModelConfigWithSources();
+  const modelConfig = Object.freeze(configuration.config);
   const dataDirectory = options.dataDirectory ?? getDataDirectory();
   const directories = getDataDirectories(dataDirectory);
   const store = await WorkspaceSessionStore.create(options.workspace.workspace, dataDirectory);
@@ -152,7 +153,14 @@ export async function createPiInteractiveRuntime(options: PiInteractiveOptions):
             createExperienceExtension({
               sourceRepository: options.workspace.sourceRoot,
               dataDirectory,
-              loadActiveCandidates: options.workspace.gitUnavailable ? () => Promise.resolve([]) : listActiveCandidates
+              loadActiveCandidates: options.workspace.gitUnavailable ? () => Promise.resolve([]) : listActiveCandidates,
+              isPlanning: workflow.isPlanning,
+              getTaskObjective: () => options.task.objective,
+              retrieve: (objective, candidates, ctx) => {
+                if (!ctx.model) throw new Error("Experience retrieval requires a selected model");
+                return selectTaskExperience({ objective, candidates, dataDirectory,
+                  model: { provider: ctx.model.provider, id: ctx.model.id }, modelConfig });
+              }
             })
           ]
         }

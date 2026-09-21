@@ -2,212 +2,173 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ExperienceCandidate } from "../src/experience/candidate.js";
-import { createExperienceExtension } from "../src/runtime/experience-extension.js";
+import type { TaskExperienceSelection } from "../src/experience/retrieval-service.js";
+import { createExperienceExtension, type ExperienceExtensionOptions } from "../src/runtime/experience-extension.js";
 
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<unknown>;
 type CommandHandler = (args: string, context: ExtensionCommandContext) => Promise<void>;
-
 function candidate(content = "先验证失败是否可稳定重现，再修改最小相关代码。"): ExperienceCandidate {
-  return {
-    id: "candidate-one",
-    kind: "strategy",
-    content,
-    contentSha256: createHash("sha256").update(content).digest("hex"),
-    rendererVersion: 1,
-    sourceRunId: "source-run",
-    sourceExperienceId: "experience-one",
-    createdAt: "2026-09-05T00:00:00.000Z",
-    title: "最小回归修复",
-    applicability: ["可复现的测试失败"],
-    contraindications: ["未配置验证器"]
-  };
+  return { id: "candidate-one", kind: "strategy", content,
+    contentSha256: createHash("sha256").update(content).digest("hex"), rendererVersion: 1,
+    sourceRunId: "source-run", sourceExperienceId: "experience-one", createdAt: "2026-09-05T00:00:00.000Z",
+    title: "最小回归修复", applicability: ["可复现的测试失败"], contraindications: ["未配置验证器"] };
 }
-
-async function harness(load: () => Promise<ExperienceCandidate[]>) {
+function selection(value = candidate()): TaskExperienceSelection {
+  return { candidate: value, selectedIds: [value.id], reasons: [], auditId: "audit-one", status: "selected" };
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+async function harness(settings: Partial<ExperienceExtensionOptions> = {}, withRetrieval = true) {
   const events = new Map<string, EventHandler>();
   const commands = new Map<string, CommandHandler>();
   const notifications: string[] = [];
   const statuses = new Map<string, string | undefined>();
+  const state = { objective: "宿主任务", session: "session-one", planning: false, active: [candidate()] };
+  const requests: Array<{ objective: string; ids: string[] }> = [];
   const context = {
+    model: { provider: "test", id: "model-one" },
+    sessionManager: { getSessionId: () => state.session },
     hasUI: true,
-    ui: {
-      notify: (message: string) => { notifications.push(message); },
-      setStatus: (key: string, text: string | undefined) => { statuses.set(key, text); }
-    }
+    ui: { notify: (message: string) => { notifications.push(message); },
+      setStatus: (key: string, text: string | undefined) => { statuses.set(key, text); } }
   } as unknown as ExtensionCommandContext;
-  const api = {
-    on: (name: string, handler: unknown) => {
-      const registered = handler as (event: unknown, ctx: ExtensionContext) => unknown;
-      events.set(name, (event, ctx) => Promise.resolve(registered(event, ctx)));
-    },
-    registerCommand: (name: string, options: { handler: CommandHandler }) => {
-      commands.set(name, options.handler);
-    }
+  const api = { on: (name: string, handler: unknown) => {
+    const registered = handler as (event: unknown, ctx: ExtensionContext) => unknown;
+    events.set(name, (event, ctx) => Promise.resolve(registered(event, ctx)));
+  }, registerCommand: (name: string, options: { handler: CommandHandler }) => { commands.set(name, options.handler); }
   } as unknown as ExtensionAPI;
-  const extension = createExperienceExtension({
-    sourceRepository: "D:/project",
-    dataDirectory: "D:/isolated-data",
-    loadActiveCandidates: (sourceRepository, dataDirectory) => {
-      if (sourceRepository !== "D:/project" || dataDirectory !== "D:/isolated-data") {
-        throw new Error("Candidate lookup escaped its configured repository or data directory");
-      }
-      return load();
-    }
-  });
-  const factory = typeof extension === "function" ? extension : extension.factory;
-  await factory(api);
-  return {
-    notifications,
-    statuses,
-    command: async (args: string) => {
-      const handler = commands.get("experience");
-      if (!handler) throw new Error("Missing /experience command");
-      await handler(args, context);
+  const options: ExperienceExtensionOptions = { sourceRepository: "D:/project", dataDirectory: "D:/isolated-data",
+    loadActiveCandidates: (repository, directory) => {
+      expect([repository, directory]).toEqual(["D:/project", "D:/isolated-data"]);
+      return Promise.resolve(state.active);
     },
-    event: async (name = "before_agent_start") => {
-      const handler = events.get(name);
-      if (!handler) throw new Error(`Missing ${name} handler`);
-      return handler({ type: name, prompt: "修复解析器", systemPrompt: "不可绕过任务权限" }, context);
-    }
-  };
+    retrieve: (objective, pool) => {
+      requests.push({ objective, ids: pool.map((entry) => entry.id) });
+      return Promise.resolve(selection(pool[0]));
+    }, getTaskObjective: () => state.objective, isPlanning: () => state.planning, ...settings };
+  if (!withRetrieval) delete options.retrieve;
+  const extension = createExperienceExtension(options);
+  await (typeof extension === "function" ? extension : extension.factory)(api);
+  return { state, context, notifications, statuses, requests,
+    command: async (args: string) => { await commands.get("experience")!(args, context); },
+    event: async (name = "before_agent_start", prompt = "修复解析器") =>
+      events.get(name)!({ type: name, prompt, systemPrompt: "不可绕过任务权限" }, context) };
 }
 
-describe("experience extension", () => {
-  it("keeps ordinary turns unchanged and listing does not implicitly select a candidate", async () => {
-    const ui = await harness(() => Promise.resolve([candidate()]));
-
-    await expect(ui.event()).resolves.toBeUndefined();
+describe("experience automatic retrieval extension", () => {
+  it("uses the actual prompt and injects checked guidance by default without changing system instructions", async () => {
+    const ui = await harness();
+    const result = await ui.event() as { message: { content: string; details: unknown }; systemPrompt?: string };
+    expect(result?.message.content).toContain(candidate().content);
+    expect(result?.message.content).toContain("higher-priority instructions");
+    expect(result?.message.details).toMatchObject({ auditId: "audit-one", selectedIds: ["candidate-one"] });
+    expect(result?.systemPrompt).toBeUndefined();
+    expect(ui.requests).toEqual([{ objective: "修复解析器", ids: ["candidate-one"] }]);
+  });
+  it("lists without retrieval and limits use to the requested active candidate", async () => {
+    const ui = await harness();
+    ui.state.active.push({ ...candidate(), id: "candidate-two" });
     await ui.command("list");
-    await expect(ui.event()).resolves.toBeUndefined();
-
-    expect(ui.notifications.join("\n")).toContain("candidate-one");
-    expect(ui.notifications.join("\n")).toContain("最小回归修复");
+    expect(ui.requests).toEqual([]);
+    await ui.command("use candidate-two");
+    const result = await ui.event() as { message: { details: unknown } };
+    expect(result?.message.details).toMatchObject({ selectedIds: ["candidate-two"] });
+    expect(ui.requests[0]?.ids).toEqual(["candidate-two"]);
   });
-
-  it("injects only the explicitly selected frozen candidate as user-level guidance", async () => {
-    const ui = await harness(() => Promise.resolve([candidate()]));
+  it.each(["empty", "failed"] as const)("never bypasses a %s result with manual use", async (status) => {
+    const ui = await harness({ retrieve: () => Promise.resolve({ candidate: null, selectedIds: [], reasons: [], auditId: "audit-one", status, error: "private-secret" }) });
     await ui.command("use candidate-one");
-
-    const result = await ui.event() as {
-      message?: { customType: string; content: string; display: boolean; details?: unknown };
-      systemPrompt?: string;
-    };
-
-    expect(result.systemPrompt).toBeUndefined();
-    expect(result.message?.customType).toBe("host-experience");
-    expect(result.message?.content).toContain("先验证失败是否可稳定重现，再修改最小相关代码。");
-    expect(result.message?.content).toContain("higher-priority instructions and task boundaries take precedence");
-    expect(result.message?.display).toBe(true);
-    expect(result.message?.details).toMatchObject({ candidateId: "candidate-one", sourceRunId: "source-run" });
-    expect(ui.notifications.join("\n")).toContain("可复现的测试失败");
-    expect(ui.notifications.join("\n")).toContain("未配置验证器");
+    await expect(ui.event()).resolves.toBeUndefined();
+    expect(ui.notifications.join("\n")).not.toContain("private-secret");
   });
-
-  it("rechecks promotion on each turn and permanently clears a revoked selection", async () => {
-    let active = [candidate()];
-    const ui = await harness(() => Promise.resolve(active));
-    await ui.command("use candidate-one");
-    expect(await ui.event()).toBeDefined();
-
-    active = [];
-    await expect(ui.event()).resolves.toBeUndefined();
-    active = [candidate()];
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.notifications.join("\n")).toContain("已停用");
-  });
-
-  it("does not silently replace a selected candidate when its content hash changes", async () => {
-    let active = [candidate()];
-    const ui = await harness(() => Promise.resolve(active));
-    await ui.command("use candidate-one");
-    active = [candidate("先收集调用链证据。")];
-
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.notifications.join("\n")).toContain("已停用");
-  });
-
-  it("clears stale UI status when listing after a candidate was revoked", async () => {
-    let active = [candidate()];
-    const ui = await harness(() => Promise.resolve(active));
-    await ui.command("use candidate-one");
-    active = [];
-
-    await ui.command("list");
-
-    expect(ui.statuses.get("experience")).toBeUndefined();
-    expect(ui.notifications.at(-1)).toContain("当前未启用");
-    await expect(ui.event()).resolves.toBeUndefined();
-  });
-
-  it.each(["off", "session_start"])("clears selection on %s", async (action) => {
-    const ui = await harness(() => Promise.resolve([candidate()]));
-    await ui.command("use candidate-one");
-
-    if (action === "off") await ui.command(action);
-    else await ui.event(action);
-
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.statuses.get("experience")).toBeUndefined();
-  });
-
-  it("fails closed on registry errors without echoing unsafe error details", async () => {
-    let failure = false;
-    const ui = await harness(() => {
-      if (failure) return Promise.reject(new Error("private-secret-auth-content"));
-      return Promise.resolve([candidate()]);
-    });
-    await ui.command("use candidate-one");
-    failure = true;
-
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.notifications.join("\n")).toContain("已停用");
-    expect(ui.notifications.join("\n")).not.toContain("private-secret-auth-content");
-    failure = false;
-    await expect(ui.event()).resolves.toBeUndefined();
-  });
-
-  it("rejects a corrupt candidate before it enters model context", async () => {
-    const corrupt = { ...candidate(), content: "篡改过的候选" };
-    const ui = await harness(() => Promise.resolve([corrupt]));
-
-    await ui.command("use candidate-one");
-
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.notifications.join("\n")).not.toContain("篡改过的候选");
-  });
-
-  it("does not choose an unavailable candidate or accept extra command arguments", async () => {
-    const ui = await harness(() => Promise.resolve([candidate()]));
-    await ui.command("use missing-candidate");
-    await expect(ui.event()).resolves.toBeUndefined();
-    await ui.command("use candidate-one extra");
-    await expect(ui.event()).resolves.toBeUndefined();
-    expect(ui.notifications.join("\n")).toContain("用法");
-  });
-
-  it("does not reenable a pending selection after the user switches session", async () => {
-    let resolveLookup: ((value: ExperienceCandidate[]) => void) | undefined;
-    const ui = await harness(() => new Promise((resolve) => { resolveLookup = resolve; }));
-    const selection = ui.command("use candidate-one");
-    await ui.event("session_start");
-    resolveLookup?.([candidate()]);
-    await selection;
-
-    await expect(ui.event()).resolves.toBeUndefined();
-  });
-
-  it("does not inject a pending lookup after the user turns experience off", async () => {
-    let resolveLookup: ((value: ExperienceCandidate[]) => void) | undefined;
-    let delayed = false;
-    const ui = await harness(() => delayed
-      ? new Promise((resolve) => { resolveLookup = resolve; })
-      : Promise.resolve([candidate()]));
-    await ui.command("use candidate-one");
-    delayed = true;
-    const prompt = ui.event();
+  it("keeps off across turns, restores auto explicitly and resets the new session to auto", async () => {
+    const ui = await harness();
     await ui.command("off");
-    resolveLookup?.([candidate()]);
-
-    await expect(prompt).resolves.toBeUndefined();
+    await expect(ui.event()).resolves.toBeUndefined();
+    await expect(ui.event()).resolves.toBeUndefined();
+    expect(ui.requests).toEqual([]);
+    await ui.command("auto");
+    expect(await ui.event()).toBeDefined();
+    await ui.command("off");
+    await ui.event("session_start");
+    expect(await ui.event()).toBeDefined();
+  });
+  it.each(["off", "auto", "use", "session_start", "session_before_switch", "session_shutdown", "model_select", "input", "task", "session", "model", "planning"])("discards results after %s changes while retrieval is pending", async (change) => {
+    const pending = deferred<TaskExperienceSelection>();
+    const started = deferred<void>();
+    const ui = await harness({ retrieve: () => { started.resolve(); return pending.promise; } });
+    const result = ui.event();
+    await started.promise;
+    if (["off", "auto"].includes(change)) await ui.command(change);
+    else if (change === "use") await ui.command("use candidate-one");
+    else if (change === "task") ui.state.objective = "another task";
+    else if (change === "session") ui.state.session = "session-two";
+    else if (change === "model") ui.context.model = { ...ui.context.model!, id: "model-two" };
+    else if (change === "planning") ui.state.planning = true;
+    else await ui.event(change);
+    pending.resolve(selection());
+    await expect(result).resolves.toBeUndefined();
+  });
+  it.each(["revoked", "content", "metadata"])("revalidates %s after retrieval before injecting", async (change) => {
+    const pending = deferred<TaskExperienceSelection>();
+    const started = deferred<void>();
+    const ui = await harness({ retrieve: () => { started.resolve(); return pending.promise; } });
+    const result = ui.event();
+    await started.promise;
+    ui.state.active = change === "revoked" ? [] : change === "content" ? [candidate("不同正文")] : [{ ...candidate(), applicability: ["条件已变更"] }];
+    pending.resolve(selection());
+    await expect(result).resolves.toBeUndefined();
+  });
+  it.each(["planning", "model", "pool", "retrieve"])("does not request or inject with unavailable %s", async (missing) => {
+    const ui = await harness({}, missing !== "retrieve");
+    if (missing === "planning") ui.state.planning = true;
+    if (missing === "model") ui.context.model = undefined;
+    if (missing === "pool") ui.state.active = [];
+    await expect(ui.event()).resolves.toBeUndefined();
+    expect(ui.requests).toEqual([]);
+  });
+  it("fails closed on lookup and retrieval errors without blocking the task or echoing secrets", async () => {
+    for (const settings of [
+      { loadActiveCandidates: () => Promise.reject(new Error("private-secret")) },
+      { retrieve: () => Promise.reject(new Error("private-secret")) }
+    ]) {
+      const ui = await harness(settings);
+      await expect(ui.event()).resolves.toBeUndefined();
+      expect(ui.notifications.join("\n")).not.toContain("private-secret");
+    }
+  });
+  it("rejects corrupt and unavailable candidates and invalid commands", async () => {
+    const ui = await harness();
+    await ui.command("use missing");
+    await expect(ui.event()).resolves.toBeUndefined();
+    await ui.command("auto extra");
+    expect(ui.notifications.at(-1)).toContain("用法");
+    await ui.command("auto");
+    ui.state.active = [{ ...candidate(), content: "篡改正文" }];
+    await expect(ui.event()).resolves.toBeUndefined();
+    expect(ui.requests).toEqual([]);
+  });
+  it("does not accept a stale use request that finishes after off", async () => {
+    const pending = deferred<ExperienceCandidate[]>();
+    const ui = await harness({ loadActiveCandidates: () => pending.promise });
+    const use = ui.command("use candidate-one");
+    await ui.command("off");
+    pending.resolve([candidate()]);
+    await use;
+    await expect(ui.event()).resolves.toBeUndefined();
+  });
+  it.each(["list", "turn"])("clears revoked manual selection during %s and never silently restores it", async (step) => {
+    const ui = await harness();
+    await ui.command("use candidate-one");
+    ui.state.active = [];
+    if (step === "list") await ui.command("list");
+    else await ui.event();
+    expect(ui.statuses.get("experience") ?? "").not.toContain("待筛选");
+    ui.state.active = [candidate()];
+    await expect(ui.event()).resolves.toBeUndefined();
+    expect(ui.requests).toEqual([]);
   });
 });

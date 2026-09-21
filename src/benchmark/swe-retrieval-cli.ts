@@ -31,8 +31,8 @@ export async function runRetrievalCli(args: string[], log: (text: string) => voi
   const result = await runRetrievalWorkflow({ sourceRoot, outputRoot,
     model: { ...model, reasoning: "low", baseUrlSha256: sha256Text(config.baseUrl ?? "provider-default"), timeoutMs: config.synthesisTimeoutMs, maxOutputTokens: config.synthesisMaxOutputTokens },
     onProgress: log,
-    complete: async (request) => completeExperienceStage({ model, modelConfig: config, reasoning: "low", dataDirectory: join(outputRoot, "model-data"), evidence: [],
-      observation: { eligibility: "eligible", category: "unknown", stage: "unknown", summary: "经验检索文本整理与适用性诊断", evidenceRefs: [] } }, request.material, request.systemPrompt),
+    complete: async (request) => completeExperienceStage({ model, modelConfig: config, reasoning: "low",
+      dataDirectory: join(outputRoot, "model-data") }, request.material, request.systemPrompt),
   });
   log(JSON.stringify(result, null, 2));
 }

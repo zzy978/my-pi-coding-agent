@@ -8,12 +8,30 @@ import type { ExperimentBundle } from "./experiment/schema.js";
 import type { ExperienceBundle } from "./experience/schema.js";
 import { stripUnsafeControls } from "./experience/candidate.js";
 import { compareReviewPipelines } from "./experience/review-comparison.js";
+import { candidateIndexPath, loadSearchIndex, toRetrievalEntry, type SearchIndexRecord } from "./experience/retrieval-index.js";
+import { redactSensitiveText } from "./evaluation/redaction.js";
 
 function print(message: string): void {
   console.log(stripUnsafeControls(message));
 }
 
-function showExperience(bundle: ExperienceBundle): void {
+type CandidateIndexStatus = { candidateId: string; status: SearchIndexRecord["status"] | "missing" | "unavailable"; error?: string };
+const safeIndexError = (error: unknown): string => stripUnsafeControls(redactSensitiveText(error instanceof Error ? error.message : String(error))).slice(0, 2_000);
+
+async function experienceIndexStatuses(bundle: ExperienceBundle, dataDirectory: string): Promise<CandidateIndexStatus[]> {
+  return Promise.all(bundle.candidates.map(async (candidate) => {
+    try {
+      const index = await loadSearchIndex(toRetrievalEntry(candidate), candidateIndexPath(candidate, dataDirectory));
+      return { candidateId: candidate.id, status: index?.status ?? "missing", ...(index?.error ? { error: safeIndexError(index.error) } : {}) };
+    } catch (error) {
+      return { candidateId: candidate.id, status: "unavailable" as const,
+        error: safeIndexError(error) };
+    }
+  }));
+}
+
+function showExperience(bundle: ExperienceBundle, indexes: CandidateIndexStatus[] = []): void {
+  const statuses = new Map(indexes.map((item) => [item.candidateId, item]));
   print([
     `经验：${bundle.id}`,
     `来源运行：${bundle.sourceRunId}`,
@@ -32,6 +50,8 @@ function showExperience(bundle: ExperienceBundle): void {
       ...bundle.card.lessons.map((lesson) => `经验：${lesson}`)] : []),
     ...bundle.candidates.flatMap((candidate) => [
       "", `候选：${candidate.id} (${candidate.kind}) ${candidate.title}`,
+      `检索索引：${statuses.get(candidate.id)?.status ?? "missing"}`,
+      ...(statuses.get(candidate.id)?.error ? [`索引错误：${statuses.get(candidate.id)!.error}`] : []),
       `哈希：${candidate.contentSha256}`, `适用：${candidate.applicability.join("；")}`,
       `禁用场景：${candidate.contraindications.join("；")}`, candidate.content
     ]),
@@ -62,7 +82,7 @@ export async function handleLearningManagement(options: CliOptions, dataDirector
   switch (command.mode) {
     case "analyze": {
       const bundle = await analyzeRun(command.runId, dataDirectory, command);
-      showExperience(bundle);
+      showExperience(bundle, await experienceIndexStatuses(bundle, dataDirectory));
       return bundle.synthesis.status === "failed" || bundle.review?.status === "failed" ? 1 : 0;
     }
     case "show-review-comparison": {
@@ -88,8 +108,9 @@ export async function handleLearningManagement(options: CliOptions, dataDirector
     }
     case "show-experience": {
       const bundle = await loadExperience(command.id, dataDirectory);
-      if (options.json) console.log(JSON.stringify(bundle, null, 2));
-      else showExperience(bundle);
+      const indexes = await experienceIndexStatuses(bundle, dataDirectory);
+      if (options.json) console.log(JSON.stringify({ ...bundle, retrievalIndexes: indexes }, null, 2));
+      else showExperience(bundle, indexes);
       return 0;
     }
     case "experiment": {

@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, writeFile, open, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { readModelConfig } from "../model-config.js";
 import { sha256Json, sha256Text } from "../evaluation/schema.js";
 import { loadRunBundle, writeJsonAtomic } from "../evaluation/store.js";
@@ -14,6 +15,7 @@ import { docker } from "./swe-process.js";
 import { runSweTask, recoverTrial } from "./swe-run.js";
 import { HOLDOUT_SEED, QUOTAS, validateHoldoutTasks, retrieveGuidance, holdoutSummary, type LibraryEntry, type Retrieval } from "./swe-holdout.js";
 import { executePairs, applyRegrade, type HoldoutState } from "./swe-holdout-state.js";
+import { freezeHoldoutRetrieval, holdoutCandidate } from "./swe-holdout-retrieval.js";
 
 interface Catalog { dataset: string; revision: string; tasks: Array<SweTask & { image: string }> }
 interface Library { entries: LibraryEntry[]; sha256: string; sourceProtocol: {
@@ -69,11 +71,11 @@ async function initialize(root: string, source: string): Promise<void> {
   if (!await exists(join(root, "catalog.json"))) await bridge(root, ["prepare-holdout"]);
 }
 
-async function main(): Promise<void> {
-  const mode = process.argv[2] ?? "status";
-  if (!["catalog", "prepare", "run", "status"].includes(mode) || process.argv.length > 5) throw new Error("Usage: npm run benchmark:swe-holdout -- catalog|prepare|run|status [data-root] [mini-root]");
-  const root = resolve(process.argv[3] ?? ".picoding/benchmarks/swe-holdout-v1");
-  const source = resolve(process.argv[4] ?? ".picoding/benchmarks/swe-mini-r0-b-v1");
+export async function runHoldoutCli(args: string[]): Promise<void> {
+  const mode = args[0] ?? "status";
+  if (!["catalog", "prepare", "run", "status"].includes(mode) || args.length > 3 || args.slice(1).some((arg) => arg.startsWith("--"))) throw new Error("Usage: npm run benchmark:swe-holdout -- catalog|prepare|run|status [data-root] [mini-root]");
+  const root = resolve(args[1] ?? ".picoding/benchmarks/swe-holdout-v2");
+  const source = resolve(args[2] ?? ".picoding/benchmarks/swe-mini-r0-b-v1");
   if (root === source) throw new Error("Holdout output must not overwrite Mini");
   const statePath = join(root, "batch.json");
   if (mode === "status") {
@@ -97,11 +99,42 @@ async function main(): Promise<void> {
     if (sha256Json(library.entries) !== library.sha256 || sha256Json(sourceCatalog) !== library.sourceCatalogSha256) throw new Error("Frozen library or source catalog drift");
     const tasks = catalog.tasks.map(publicTask);
     validateHoldoutTasks(tasks, sourceCatalog.tasks);
-    const retrieval = Object.fromEntries(tasks.map((task) => [task.instance_id, retrieveGuidance(task, library.entries)]));
+    const protocolPath = join(root, "protocol.json");
+    const previousProtocol = await exists(protocolPath) ? await json<{ version: number }>(protocolPath) : null;
+    if (previousProtocol && previousProtocol.version !== 1 && previousProtocol.version !== 2) throw new Error("Unknown holdout protocol version");
+    if (previousProtocol?.version === 2 && (!await exists(join(root, "retrieval-v2.json")) || !await exists(join(root, "retrieval.json")))) throw new Error("Frozen V2 retrieval missing; refusing regeneration");
+    if (previousProtocol?.version === 1 && await exists(join(root, "retrieval-v2.json"))) throw new Error("Do not mix V1 and V2 holdout protocols");
+    // Unstarted V1 catalogs already have retrieval.json; preserve their old semantics too.
+    const legacy = previousProtocol?.version === 1 || (!previousProtocol && await exists(join(root, "retrieval.json")) && !await exists(join(root, "retrieval-v2.json")));
     const retrievalPath = join(root, "retrieval.json");
-    if (await exists(retrievalPath)) {
-      if (sha256Json(await json(retrievalPath)) !== sha256Json(retrieval)) throw new Error("Frozen retrieval drift");
-    } else await writeJsonAtomic(retrievalPath, retrieval);
+    let retrieval: Record<string, Retrieval> = {};
+    if (legacy) {
+      retrieval = Object.fromEntries(tasks.map((task) => [task.instance_id, retrieveGuidance(task, library.entries)]));
+      if (await exists(retrievalPath)) {
+        if (sha256Json(await json(retrievalPath)) !== sha256Json(retrieval)) throw new Error("Frozen retrieval drift");
+      } else await writeJsonAtomic(retrievalPath, retrieval);
+    }
+    if (mode === "catalog" && !legacy) {
+      console.log(`CATALOG tasks=${tasks.length} library=${library.entries.length} retrieval=pending-prepare`);
+      await writeFile(join(root, "tasks.md"), `# 新任务清单\n\n固定种子：${HOLDOUT_SEED}。V2 检索将在 prepare/run 阶段冻结。\n\n| 仓库 | 任务 |\n| --- | --- |\n${tasks.map((task) => `| ${task.repo} | ${task.instance_id} |`).join("\n")}\n`);
+      return;
+    }
+    if (legacy && (mode === "catalog" || mode === "prepare")) {
+      console.log(`CATALOG tasks=${tasks.length} library=${library.entries.length} retrieved=${Object.values(retrieval).filter((item) => item.candidate).length}`);
+      if (mode === "prepare") {
+        await prepareImages(root, catalog.tasks); await preflightTasks(root, tasks);
+        console.log("PREPARED 40 tasks: baseline red, reference green");
+      }
+      return;
+    }
+    const config = readModelConfig(), sourceModel = library.sourceProtocol.model;
+    if (config.provider !== sourceModel.provider || config.modelId !== sourceModel.id || sha256Text(config.baseUrl ?? "provider-default") !== sourceModel.baseUrlSha256) throw new Error("Configured model differs from Mini source model");
+    config.requestTimeoutMs = sourceModel.requestTimeoutMs; config.maxOutputTokens = sourceModel.maxOutputTokens; config.taskTimeoutMs = sourceModel.taskTimeoutMs;
+    const sourceSha256 = await fingerprintSources();
+    const frozen = legacy ? null : await freezeHoldoutRetrieval({ root, tasks, entries: library.entries,
+      catalogSha256: sha256Json(catalog), librarySha256: sha256Json(library), sourceSha256,
+      model: { provider: sourceModel.provider, id: sourceModel.id }, dataDirectory: join(root, "agent-data"), modelConfig: config });
+    if (frozen) retrieval = frozen.retrieval;
     console.log(`CATALOG tasks=${tasks.length} library=${library.entries.length} retrieved=${Object.values(retrieval).filter((item) => item.candidate).length}`);
     await writeFile(join(root, "tasks.md"), `# 新任务清单\n\n固定种子：${HOLDOUT_SEED}。与 Mini 的任务 ID 和规范化问题文本不重合。\n\n| 仓库 | 任务 | 检索经验数 |\n| --- | --- | ---: |\n${tasks.map((task) => `| ${task.repo} | ${task.instance_id} | ${retrieval[task.instance_id]!.selected.length} |`).join("\n")}\n`);
     if (mode === "catalog") return;
@@ -109,20 +142,19 @@ async function main(): Promise<void> {
     await preflightTasks(root, tasks);
     console.log("PREPARED 40 tasks: baseline red, reference green");
     if (mode === "prepare") return;
-    const config = readModelConfig(), sourceModel = library.sourceProtocol.model;
-    if (config.provider !== sourceModel.provider || config.modelId !== sourceModel.id || sha256Text(config.baseUrl ?? "provider-default") !== sourceModel.baseUrlSha256) throw new Error("Configured model differs from Mini source model");
-    config.requestTimeoutMs = sourceModel.requestTimeoutMs; config.maxOutputTokens = sourceModel.maxOutputTokens; config.taskTimeoutMs = sourceModel.taskTimeoutMs;
     const privateHashes = Object.fromEntries(await Promise.all(tasks.map(async (task) => [task.instance_id, sha256Text(await readFile(join(root, "private", `${task.instance_id}.json`), "utf8"))] as const)));
-    const protocol = { version: 1, kind: "frozen-mini-library-holdout", seed: HOLDOUT_SEED, quotas: QUOTAS,
+    const protocol = { version: legacy ? 1 : 2, kind: "frozen-mini-library-holdout", seed: HOLDOUT_SEED, quotas: QUOTAS,
       catalogSha256: sha256Json(catalog), librarySha256: sha256Json(library), retrievalSha256: sha256Json(retrieval), privateHashes,
-      sourceSha256: await fingerprintSources(), images, evaluator: (await docker(["image", "inspect", "--format", "{{.Id}}", EVALUATOR_IMAGE])).stdout.trim(),
+      sourceSha256, images, evaluator: (await docker(["image", "inspect", "--format", "{{.Id}}", EVALUATOR_IMAGE])).stdout.trim(),
       model: sourceModel, thinkingLevel: "high", tools: ["bash"], order: "alternate-control-first-experience-first", taskCount: 40, runCount: 80,
-      retrieval: { method: "BM25", k1: 1.2, b: 0.75, minimumMatchedTerms: 2, topK: 3, maxCharacters: 9000 } };
+      retrieval: frozen ? { ...frozen.metadata, model: { provider: sourceModel.provider, id: sourceModel.id, baseUrlSha256: sourceModel.baseUrlSha256,
+        timeoutMs: config.synthesisTimeoutMs, maxOutputTokens: config.synthesisMaxOutputTokens } }
+        : { method: "BM25", k1: 1.2, b: 0.75, minimumMatchedTerms: 2, topK: 3, maxCharacters: 9000 } };
     let state: HoldoutState;
     if (await exists(statePath)) state = await json<HoldoutState>(statePath);
     else {
       state = { schemaVersion: 1, fingerprint: sha256Json(protocol), status: "ready", control: [], experience: [], current: null };
-      await writeJsonAtomic(join(root, "protocol.json"), protocol);
+      if (!previousProtocol) await writeJsonAtomic(join(root, "protocol.json"), protocol);
     }
     if (state.fingerprint !== sha256Json(protocol) || sha256Json(await json(join(root, "protocol.json"))) !== sha256Json(protocol)) throw new Error("Protocol drift: do not mix runs");
     const data = join(root, "agent-data"); process.env.PI_TUI_AGENT_DATA_DIR = data; await ensureDataDirectories(data);
@@ -132,7 +164,7 @@ async function main(): Promise<void> {
       await writeJsonAtomic(join(root, "summary.json"), { status: state.status, librarySize: library.entries.length, retrievalCoverage: Object.values(retrieval).filter((entry) => entry.candidate).length, ...summary });
       const groups = [["全部新任务", summary.overall], ["原仓库新问题", summary.sameRepository], ["新仓库问题", summary.newRepository]] as const;
       const costGroups = [["全部完整usage", summary.overall.completeUsagePairs], ["两臂均成功", summary.overall.bothPassedUsagePairs]] as const;
-      await writeFile(join(root, "report.md"), `# Mini经验库泛化对照\n\n状态：${state.status}。40题，每题两臂各运行一次；部分结果不是最终成功率。经验库与检索规则冻结，新任务不复盘。\n\n| 分组 | 无经验通过 | 经验库通过 | 改善 | 退化 | 已配对 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${groups.map(([label, group]) => `| ${label} | ${group.control.passed}/${group.taskCount} | ${group.experience.passed}/${group.taskCount} | ${group.transitions.improved} | ${group.transitions.regressed} | ${group.taskCount - group.transitions.unpaired} |`).join("\n")}\n\n| 成本口径 | 完整配对数 | 无经验token | 经验库token | 变化 |\n| --- | ---: | ---: | ---: | ---: |\n${costGroups.map(([label, cost]) => { return `| ${label} | ${cost.count} | ${cost.control} | ${cost.experience} | ${cost.percentChange === null ? "未知" : cost.percentChange.toFixed(2) + "%"} |`; }).join("\n")}\n\ntoken包含缓存读取；未知usage不补零。历史Mini经验构建成本未计入本次推理增量成本，经验文本输入成本已包含。每题每组一次运行，不能排除随机波动；模型预训练是否见过这些公开题目未知。\n\n| 任务 | 无经验 | 经验库 | 经验条数 | token差 |\n| --- | --- | --- | ---: | ---: |\n${summary.overall.rows.map((row) => `| ${row.id} | ${row.r0?.resolved ?? "未知"} | ${row.b?.resolved ?? "未知"} | ${retrieval[row.id]!.selected.length} | ${row.tokenDelta ?? "未知"} |`).join("\n")}\n`);
+      await writeFile(join(root, "report.md"), `# Mini经验库泛化对照\n\n状态：${state.status}。40题，每题两臂各运行一次；部分结果不是最终成功率。经验库与检索规则冻结，新任务不复盘。\n\n| 分组 | 无经验通过 | 经验库通过 | 改善 | 退化 | 已配对 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${groups.map(([label, group]) => `| ${label} | ${group.control.passed}/${group.taskCount} | ${group.experience.passed}/${group.taskCount} | ${group.transitions.improved} | ${group.transitions.regressed} | ${group.taskCount - group.transitions.unpaired} |`).join("\n")}\n\n| 成本口径 | 完整配对数 | 无经验token | 经验库token | 变化 |\n| --- | ---: | ---: | ---: | ---: |\n${costGroups.map(([label, cost]) => { return `| ${label} | ${cost.count} | ${cost.control} | ${cost.experience} | ${cost.percentChange === null ? "未知" : cost.percentChange.toFixed(2) + "%"} |`; }).join("\n")}\n\ntoken包含缓存读取；未知usage不补零。历史Mini经验构建成本未计入本次推理增量成本，经验文本输入成本已包含。V2索引和适用性筛选的额外用量单独保存在retrieval-v2.json，不计入上表修复运行token；未知用量不补零。每题每组一次运行，不能排除随机波动；模型预训练是否见过这些公开题目未知。\n\n| 任务 | 无经验 | 经验库 | 经验条数 | token差 |\n| --- | --- | --- | ---: | ---: |\n${summary.overall.rows.map((row) => `| ${row.id} | ${row.r0?.resolved ?? "未知"} | ${row.b?.resolved ?? "未知"} | ${retrieval[row.id]!.selected.length} | ${row.tokenDelta ?? "未知"} |`).join("\n")}\n`);
     };
     await save();
     // Existing incomplete scores reuse their patches; this never invokes a model.
@@ -146,16 +178,18 @@ async function main(): Promise<void> {
     await executePairs(tasks, state, { save,
       recover: async (instanceId, arm, runId) => {
         const metadata = await json<{ phase: string; instanceId: string; candidate: Retrieval["candidate"] }>(join(data, "runs", runId, "benchmark.json"));
-        if (metadata.phase !== arm || metadata.instanceId !== instanceId || sha256Json(metadata.candidate) !== sha256Json(arm === "experience" ? retrieval[instanceId]!.candidate : null)) throw new Error("Recovered run binding mismatch");
+        if (metadata.phase !== arm || metadata.instanceId !== instanceId || sha256Json(metadata.candidate) !== sha256Json(holdoutCandidate(retrieval, instanceId, arm))) throw new Error("Recovered run binding mismatch");
         return recoverTrial(data, runId);
       },
       run: async (task, arm, started) => {
         console.log(`${arm} START ${task.instance_id}`);
-        const trial = await runSweTask({ task, image: images[task.instance_id]!, root, data, config, phase: arm, candidate: arm === "experience" ? retrieval[task.instance_id]!.candidate : null, started });
+        const trial = await runSweTask({ task, image: images[task.instance_id]!, root, data, config, phase: arm, candidate: holdoutCandidate(retrieval, task.instance_id, arm), started });
         console.log(`${arm} RESULT ${JSON.stringify(trial)}`); return trial;
       }
     });
     console.log("COMPLETED control=40 experience=40");
   } finally { await lock.close(); await unlink(lockPath); }
 }
-main().catch((error: unknown) => { console.error(redactSensitiveText(error instanceof Error ? error.message : String(error))); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  runHoldoutCli(process.argv.slice(2)).catch((error: unknown) => { console.error(redactSensitiveText(error instanceof Error ? error.message : String(error))); process.exitCode = 1; });
+}

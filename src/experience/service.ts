@@ -11,8 +11,19 @@ import { stripUnsafeControls } from "./candidate.js";
 import { saveExperience } from "./store.js";
 import { synthesizeExperience, type Synthesize } from "./synthesizer.js";
 import { parseReviewOutput, reviewExperience, toProposal, type Review, type ReviewMode } from "./review.js";
+import { indexExperience, type RetrievalCompletion } from "./retrieval-index.js";
+import type { ModelConfig } from "../model-config.js";
 
-export interface AnalyzeOptions extends ReviewSelection { synthesize?: Synthesize; review?: Review; reviewMode?: ReviewMode }
+export type IndexExperience = (bundle: ExperienceBundle, dataDirectory: string,
+  options?: { complete?: RetrievalCompletion; modelConfig?: ModelConfig }) => Promise<void>;
+export interface AnalyzeOptions extends ReviewSelection {
+  synthesize?: Synthesize;
+  review?: Review;
+  reviewMode?: ReviewMode;
+  index?: IndexExperience;
+  indexComplete?: RetrievalCompletion;
+  modelConfig?: ModelConfig;
+}
 
 function safeError(error: unknown): string {
   return stripUnsafeControls(redactSensitiveText(error instanceof Error ? error.message : String(error))).slice(0, 2_000) || "Experience stage failed";
@@ -36,7 +47,8 @@ export async function analyzeRun(runId: string, dataDirectory: string, dependenc
   };
   if (observation.eligibility === "eligible") {
     try {
-      const response = await (dependencies.synthesize ?? synthesizeExperience)({ observation, evidence: collected.evidence, model: source.manifest.agent.model, dataDirectory });
+      const response = await (dependencies.synthesize ?? synthesizeExperience)({ observation, evidence: collected.evidence, model: source.manifest.agent.model, dataDirectory,
+        ...(dependencies.modelConfig ? { modelConfig: dependencies.modelConfig } : {}) });
       if (response.usage) bundle.synthesis.usage = parseSynthesisUsage(response.usage);
       if (response.error) throw new Error(response.error);
       const proposed = parseSynthesisOutput(response.text, collected.evidence);
@@ -57,6 +69,11 @@ export async function analyzeRun(runId: string, dataDirectory: string, dependenc
     let proposerBinding = {};
     if (mode === "compare") {
       await saveExperience(bundle, dataDirectory);
+      try {
+        const index = dependencies.index ?? indexExperience;
+        await index(bundle, dataDirectory, { ...(dependencies.indexComplete ? { complete: dependencies.indexComplete } : {}),
+          ...(dependencies.modelConfig ? { modelConfig: dependencies.modelConfig } : {}) });
+      } catch { /* Index failure is retained in its sidecar when possible; experience evidence remains valid. */ }
       proposerBinding = { proposerExperienceId: bundle.id, proposerExperienceSha256: sha256Json(bundle) };
       const id = randomUUID();
       bundle = { ...bundle, id, candidates: bundle.candidates.map((candidate) => ({ ...candidate, id: randomUUID(), sourceExperienceId: id })) };
@@ -68,7 +85,8 @@ export async function analyzeRun(runId: string, dataDirectory: string, dependenc
     if (proposals.length && bundle.card) {
       try {
         const response = await (dependencies.review ?? reviewExperience)({ observation, evidence: collected.evidence, model: source.manifest.agent.model,
-          dataDirectory, proposals: structuredClone(proposals), card: structuredClone(bundle.card) });
+          dataDirectory, ...(dependencies.modelConfig ? { modelConfig: dependencies.modelConfig } : {}),
+          proposals: structuredClone(proposals), card: structuredClone(bundle.card) });
         if (response.usage) bundle.review.usage = parseSynthesisUsage(response.usage);
         if (response.error) throw new Error(response.error);
         const decisions = parseReviewOutput(response.text, proposals, collected.evidence);
@@ -88,5 +106,10 @@ export async function analyzeRun(runId: string, dataDirectory: string, dependenc
   }
   bundle = parseExperienceBundle(bundle);
   await saveExperience(bundle, dataDirectory);
+  try {
+    const index = dependencies.index ?? indexExperience;
+    await index(bundle, dataDirectory, { ...(dependencies.indexComplete ? { complete: dependencies.indexComplete } : {}),
+      ...(dependencies.modelConfig ? { modelConfig: dependencies.modelConfig } : {}) });
+  } catch { /* Search indexing is supplementary and must not invalidate an immutable experience. */ }
   return bundle;
 }

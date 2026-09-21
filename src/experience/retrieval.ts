@@ -1,8 +1,11 @@
-import type { LibraryEntry } from "../benchmark/swe-holdout.js";
-import { publicTask, type SweTask } from "../benchmark/swe-mini.js";
 import { sha256Text } from "../evaluation/schema.js";
 import { assertArtifactId, assertNoSecrets, parseCandidateSnapshot, type CandidateSnapshot } from "./candidate.js";
 import { assertPublicRetrievalText } from "./retrieval-text.js";
+
+export interface RetrievalTask { problem_statement: string }
+export interface RetrievalEntry {
+  title: string; applicability: string[]; contraindications: string[]; candidate: CandidateSnapshot;
+}
 
 export type Verdict = "direct" | "general" | "inapplicable" | "unknown";
 type Stage = "initial" | "after_inspection" | "after_error";
@@ -46,21 +49,19 @@ function quotes(value: unknown, source: string, minimum = 0, validate = assertNo
   if (result.some((quote) => !source.includes(quote))) throw new Error("Retrieval quote is not an exact source excerpt");
   return result;
 }
-function validatedTask(input: SweTask): SweTask {
-  const task = publicTask(input);
-  assertPublicRetrievalText(task.problem_statement);
-  return task;
+export function validatedTask(input: RetrievalTask): RetrievalTask {
+  return { problem_statement: text(input?.problem_statement, 64_000, assertPublicRetrievalText) };
 }
 
 /** 只拼接来源字段，不改写、折叠空格或添加标签；供模型引用与确切子串校验。 */
-export function sourceText(entry: LibraryEntry): string {
+export function sourceText(entry: RetrievalEntry): string {
   const candidate = parseCandidateSnapshot(entry.candidate);
   return [text(entry.title, 2000), ...texts(entry.applicability, 40, 2000),
     ...texts(entry.contraindications, 40, 2000), candidate.content].join("\n");
 }
-function validatedLibrary(library: LibraryEntry[]): Map<string, LibraryEntry> {
+function validatedLibrary(library: RetrievalEntry[]): Map<string, RetrievalEntry> {
   if (!Array.isArray(library)) throw new Error("Invalid retrieval library");
-  const entries = new Map<string, LibraryEntry>();
+  const entries = new Map<string, RetrievalEntry>();
   for (const entry of library) {
     sourceText(entry);
     if (entries.has(entry.candidate.id)) throw new Error("Duplicate retrieval candidate ID");
@@ -69,16 +70,16 @@ function validatedLibrary(library: LibraryEntry[]): Map<string, LibraryEntry> {
   return entries;
 }
 
-export function parseSearchCard(value: unknown, entry: LibraryEntry): SearchCard {
+export function parseSearchCard(value: unknown, entry: RetrievalEntry): SearchCard {
   const source = sourceText(entry);
   const record = object(value, ["candidateId", "contentSha256", "mechanism", "triggers", "exclusions", "action", "stage", "keywords", "sourceQuotes"]);
   const candidateId = assertArtifactId(record.candidateId);
   if (candidateId !== entry.candidate.id || record.contentSha256 !== entry.candidate.contentSha256) throw new Error("Search card candidate binding mismatch");
-  const keywords = texts(record.keywords, 32, 120, 1);
+  const keywords = texts(record.keywords, 32, 120, 1, assertPublicRetrievalText);
   if (keywords.some((keyword) => !/[a-z\p{Script=Han}]/iu.test(keyword))) throw new Error("Search keywords need Chinese or English terms");
-  return { candidateId, contentSha256: entry.candidate.contentSha256, mechanism: text(record.mechanism, 2000),
-    triggers: texts(record.triggers, 16, 1000), exclusions: texts(record.exclusions, 16, 1000), action: text(record.action, 2000),
-    stage: stage(record.stage), keywords, sourceQuotes: quotes(record.sourceQuotes, source, 1) };
+  return { candidateId, contentSha256: entry.candidate.contentSha256, mechanism: text(record.mechanism, 2000, assertPublicRetrievalText),
+    triggers: texts(record.triggers, 16, 1000, 0, assertPublicRetrievalText), exclusions: texts(record.exclusions, 16, 1000, 0, assertPublicRetrievalText), action: text(record.action, 2000, assertPublicRetrievalText),
+    stage: stage(record.stage), keywords, sourceQuotes: quotes(record.sourceQuotes, source, 1, assertPublicRetrievalText) };
 }
 
 const segmenter = new Intl.Segmenter("zh", { granularity: "word" });
@@ -92,7 +93,7 @@ function terms(value: string): string[] {
 }
 
 /** 独立 V2 BM25（k1=1.2、b=0.75）；只召回有词命中的有效检索卡，不改动 V1。 */
-export function rankGuidance(input: SweTask, library: LibraryEntry[], cards: SearchCard[], limit = 8): RankedCandidate[] {
+export function rankGuidance(input: RetrievalTask, library: RetrievalEntry[], cards: SearchCard[], limit = 8): RankedCandidate[] {
   const task = validatedTask(input);
   const entries = validatedLibrary(library);
   if (!Number.isInteger(limit) || limit < 1 || limit > 8 || !Array.isArray(cards)) throw new Error("Invalid retrieval limit or cards");
@@ -126,7 +127,7 @@ export function rankGuidance(input: SweTask, library: LibraryEntry[], cards: Sea
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, limit);
 }
 
-function decisionsFrom(value: unknown, task: SweTask, entries: LibraryEntry[], complete: boolean): ApplicabilityDecision[] {
+function decisionsFrom(value: unknown, task: RetrievalTask, entries: RetrievalEntry[], complete: boolean): ApplicabilityDecision[] {
   const library = validatedLibrary(entries);
   if (!Array.isArray(value) || value.length > entries.length || (complete && value.length !== entries.length)) throw new Error("Every applicability candidate requires exactly one decision");
   const order = new Map(entries.map((entry, index) => [entry.candidate.id, index]));
@@ -151,13 +152,13 @@ function decisionsFrom(value: unknown, task: SweTask, entries: LibraryEntry[], c
 }
 
 /** 校验可观察的绑定和引句；不把文本结构校验等同于语义正确。 */
-export function parseApplicability(value: string, input: SweTask, entries: LibraryEntry[]): ApplicabilityDecision[] {
+export function parseApplicability(value: string, input: RetrievalTask, entries: RetrievalEntry[]): ApplicabilityDecision[] {
   const task = validatedTask(input);
   const record = object(JSON.parse(text(value, 128_000)) as unknown, ["decisions"]);
   return decisionsFrom(record.decisions, task, entries, true);
 }
 
-export function selectGuidance(input: SweTask, library: LibraryEntry[], ranking: RankedCandidate[], decisions: ApplicabilityDecision[]): GuidanceSelection {
+export function selectGuidance(input: RetrievalTask, library: RetrievalEntry[], ranking: RankedCandidate[], decisions: ApplicabilityDecision[]): GuidanceSelection {
   const task = validatedTask(input);
   const entries = validatedLibrary(library);
   if (!Array.isArray(ranking) || ranking.length > 8) throw new Error("Invalid retrieval ranking");

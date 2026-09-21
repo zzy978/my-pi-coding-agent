@@ -1,6 +1,6 @@
 # 经验检索 V2：适用性筛选与离线诊断
 
-V2 在现有经验库上增加独立检索描述和适用性检查。原经验正文、候选 ID、V1 检索和历史修复结果保持不变。新增入口只处理文本，不运行 Docker 修复或官方评分，也不改变日常 TUI 的人工晋升和选择规则。
+V2 在现有经验库上增加独立检索描述和适用性检查。原经验正文、候选 ID、V1 检索和历史修复结果保持不变。本指南的离线诊断入口只处理文本，不运行 Docker 修复或官方评分。现在经验生成会自动建立独立索引，普通 TUI 默认从有效晋升候选中按 V2 筛选；人工晋升门槛保持不变。新 SWE holdout 批次也使用 V2，见 [双组运行指南](swe-holdout.md)。
 
 ## 使用方式
 
@@ -19,6 +19,8 @@ npm run benchmark:swe-retrieval -- report .picoding/benchmarks/swe-holdout-v1 .p
 ```
 
 省略目录时，来源默认为 `.picoding/benchmarks/swe-holdout-v1`，输出默认为 `.picoding/benchmarks/swe-retrieval-v2`。输出不能与来源重合或互为父子目录；不支持输出路径中的符号链接或 junction。
+
+历史批次同时绑定源码版本；源码更新后，已有产物应使用各批次 `source-snapshot` 中归档的匹配实现读取，不改写旧协议来绕过检查。
 
 上述环境变量用于匹配已交付批次的协议，仅影响当前 PowerShell 及其子进程；在同一窗口后续运行其他经验提炼时也会生效。新目录可使用其他上限，但恢复已有目录必须与其 `protocol.json` 一致。无需重新调用模型时直接用 `report`。
 

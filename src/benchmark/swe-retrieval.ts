@@ -56,7 +56,7 @@ function publicProblem(task: SweTask) { return { repo: task.repo, problem_statem
 function inputHash(inputs: RetrievalInputs): string { return sha256Json({ entries: inputs.entries, tasks: inputs.tasks, legacy: inputs.legacy }); }
 async function implementationHash(): Promise<string> {
   const extension = import.meta.url.endsWith(".ts") ? "ts" : "js";
-  const files = ["./swe-retrieval", "./swe-retrieval-cli", "./swe-retrieval-io", "./swe-retrieval-prompts", "./swe-holdout", "./swe-mini", "../experience/retrieval", "../experience/retrieval-text", "../experience/retrieval-evaluation", "../experience/candidate", "../experience/synthesizer"];
+  const files = ["./swe-retrieval", "./swe-retrieval-cli", "./swe-retrieval-io", "./swe-retrieval-prompts", "./swe-holdout", "./swe-mini", "../experience/retrieval", "../experience/retrieval-prompts", "../experience/retrieval-text", "../experience/retrieval-evaluation", "../experience/candidate", "../experience/synthesizer"];
   return sha256Json(await Promise.all(files.map(async (file) => [file, sha256Text(await readFile(fileURLToPath(new URL(`${file}.${extension}`, import.meta.url)), "utf8"))])));
 }
 async function ensureSame(path: string, value: unknown): Promise<void> {
