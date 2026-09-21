@@ -39,6 +39,20 @@ function extensionContext(select: SelectHandler, hasUI = true): ExtensionContext
 }
 
 describe("interactive policy extension", () => {
+  it("拒绝 Git 写入但不终止循环，并提供合法替代操作", async () => {
+    const handlers = await policyHandlers();
+    const result = await eventHandler(handlers, "tool_call")({ toolName: "bash", input: { command: "git tag v1.0" } },
+      extensionContext(() => Promise.resolve(undefined), false));
+    expect(result).toMatchObject({ block: true, terminate: false });
+    expect((result as { reason?: string }).reason).toContain("git tag --list");
+  });
+
+  it.each(["sudo whoami", "format D:", "git tag --list && sudo whoami"])("高风险拒绝仍终止：%s", async (command) => {
+    const handlers = await policyHandlers();
+    await expect(eventHandler(handlers, "tool_call")({ toolName: "bash", input: { command } },
+      extensionContext(() => Promise.resolve(undefined), false))).resolves.toMatchObject({ block: true, terminate: true });
+  });
+
   it.each(["read", "grep", "find", "ls", "write", "edit"])("allows external paths through %s", async (toolName) => {
     const handlers = await policyHandlers();
     await expect(eventHandler(handlers, "tool_call")({ toolName, input: { path: "../other/file.txt" } },

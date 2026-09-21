@@ -1,14 +1,15 @@
 import { invokesDiskFormat } from "./format-command.js";
+import { gitCommandRisk } from "./git-command.js";
 
 export interface CommandPolicyResult {
   allowed: boolean;
   requiresApproval?: boolean;
   reason?: string;
   ruleId?: string;
+  onDeny?: "continue" | "stop";
 }
 
 const BLOCKED_COMMANDS: Array<{ id: string; pattern: RegExp; reason: string }> = [
-  { id: "git-history", pattern: /\bgit\s+(?:commit|push|rebase|merge|cherry-pick|tag)\b/i, reason: "Git history and remote mutations are blocked" },
   { id: "privilege-escalation", pattern: /\b(?:sudo|runas)\b/i, reason: "privilege escalation is blocked" },
   { id: "system-command", pattern: /\b(?:diskpart|shutdown|Format-Volume)\b/i, reason: "system-level command is blocked" },
 ];
@@ -26,10 +27,17 @@ const APPROVAL_REQUIRED_COMMANDS: Array<{ id: string; pattern: RegExp; reason: s
 ];
 
 export function checkCommand(command: string): CommandPolicyResult {
-  if (!command.trim()) return { allowed: false, reason: "empty command", ruleId: "empty-command" };
-  if (invokesDiskFormat(command)) return { allowed: false, ruleId: "disk-format", reason: "disk formatting command is blocked" };
+  if (!command.trim()) return { allowed: false, reason: "empty command", ruleId: "empty-command", onDeny: "continue" };
+  if (invokesDiskFormat(command)) return { allowed: false, ruleId: "disk-format", reason: "disk formatting command is blocked", onDeny: "stop" };
   for (const blocked of BLOCKED_COMMANDS) {
-    if (blocked.pattern.test(command)) return { allowed: false, reason: blocked.reason, ruleId: blocked.id };
+    if (blocked.pattern.test(command)) return { allowed: false, reason: blocked.reason, ruleId: blocked.id, onDeny: "stop" };
+  }
+  const gitRisk = gitCommandRisk(command);
+  if (/\bgit\s+(?:commit|push|rebase|merge|cherry-pick)\b/i.test(command) || gitRisk === "git-history") {
+    return { allowed: false, ruleId: "git-history", reason: "Git history and remote mutations are blocked; unsupported tag syntax is denied", onDeny: "continue" };
+  }
+  if (gitRisk === "git-discard") {
+    return { allowed: true, requiresApproval: true, ruleId: "git-discard", reason: "Git command can discard files or working-tree changes" };
   }
   for (const gated of APPROVAL_REQUIRED_COMMANDS) {
     if (gated.pattern.test(command)) {

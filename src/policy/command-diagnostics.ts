@@ -5,7 +5,10 @@ export function commandPolicyDiagnostic(command: string, policy: CommandPolicyRe
   const decision = approvalDenied
     ? "Deletion command denied: explicit human approval was not granted"
     : "Command blocked";
-  return `${decision} [${policy.ruleId ?? "unknown-policy"}]: ${policy.reason ?? "policy violation"}\nCommand (redacted): ${redactCommandPreview(command)}`;
+  const recovery = policy.onDeny === "continue" && policy.ruleId === "git-history"
+    ? "\nThis command was not executed. Use git tag --list, git status, git diff, source reads or local tests to continue. Do not disguise a prohibited operation to bypass this policy."
+    : "";
+  return `${decision} [${policy.ruleId ?? "unknown-policy"}]: ${policy.reason ?? "policy violation"}\nCommand (redacted): ${redactCommandPreview(command)}${recovery}`;
 }
 
 export function policyFailureSummary(result: unknown): string | undefined {

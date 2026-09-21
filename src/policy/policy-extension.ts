@@ -80,7 +80,7 @@ export function createPolicyExtension(
           const command = typeof event.input.command === "string" ? event.input.command : "";
           const result = checkCommand(command);
           if (!result.allowed) {
-            return { block: true, terminate: true, reason: commandPolicyDiagnostic(command, result) };
+            return { block: true, terminate: result.onDeny !== "continue", reason: commandPolicyDiagnostic(command, result) };
           }
           if (result.requiresApproval && options.interactiveShellApproval) {
             if (!ctx.hasUI) {

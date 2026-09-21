@@ -3,7 +3,7 @@ import { extname } from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 
-export const PROMPT_POLICY_VERSION = 4 as const;
+export const PROMPT_POLICY_VERSION = 5 as const;
 export const INTERACTIVE_TASK_OBJECTIVE = "Interactive coding task";
 
 export interface VerificationSpec {

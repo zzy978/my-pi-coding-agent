@@ -174,6 +174,9 @@ export class RunRecorder {
         const started = this.toolStartedAt.get(event.toolCallId);
         this.toolStartedAt.delete(event.toolCallId);
         const policyFailure = event.isError ? policyFailureSummary(event.result) : undefined;
+        const toolResult: unknown = event.result;
+        const terminate = toolResult && typeof toolResult === "object" && "terminate" in toolResult
+          && typeof toolResult.terminate === "boolean" ? toolResult.terminate : undefined;
         if (event.isError) this.addError(policyFailure ?? `Tool ${event.toolName} failed`);
         this.record("tool_end", {
           toolCallId: event.toolCallId,
@@ -181,6 +184,7 @@ export class RunRecorder {
           isError: event.isError,
           resultSummary: policyFailure ?? summarizeToolResult(event.result),
           ...(policyFailure ? { policyFailure } : {}),
+          ...(terminate === undefined ? {} : { terminate }),
           ...(started === undefined ? {} : { durationMs: Date.now() - started })
         });
         break;
@@ -202,9 +206,16 @@ export class RunRecorder {
         this.record("compaction_end", { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry });
         break;
       case "message_start":
-      case "message_end":
         this.record(event.type, { role: event.message.role });
         break;
+      case "message_end": {
+        const stopReason = event.message.role === "assistant" ? event.message.stopReason : undefined;
+        this.record(event.type, {
+          role: event.message.role,
+          ...(stopReason && ["stop", "length", "toolUse", "error", "aborted"].includes(stopReason) ? { stopReason } : {})
+        });
+        break;
+      }
       case "message_update":
         if (event.assistantMessageEvent.type === "thinking_delta" && !this.reasoningRecorded) {
           this.reasoningRecorded = true;

@@ -223,12 +223,31 @@ describe("controlled run and replay lifecycle", () => {
     catch (error) { message = error instanceof Error ? error.message : String(error); }
     recorder.recordAgentEvent({ type: "tool_execution_start", toolCallId: "denied-1", toolName: "powershell", args: { command } } as AgentSessionEvent);
     recorder.recordAgentEvent({ type: "tool_execution_end", toolCallId: "denied-1", toolName: "powershell", isError: true,
-      result: { content: [{ type: "text", text: message }] } } as AgentSessionEvent);
+      result: { content: [{ type: "text", text: message }], terminate: true } } as AgentSessionEvent);
+    recorder.recordAgentEvent({ type: "tool_execution_end", toolCallId: "recoverable", toolName: "bash", isError: true,
+      result: { content: [], terminate: false } } as AgentSessionEvent);
+    recorder.recordAgentEvent({ type: "tool_execution_end", toolCallId: "legacy", toolName: "bash", isError: false,
+      result: { content: [] } } as AgentSessionEvent);
+    recorder.recordAgentEvent({ type: "tool_execution_end", toolCallId: "malformed", toolName: "bash", isError: false,
+      result: { content: [], terminate: "private-terminate-value" } } as unknown as AgentSessionEvent);
+    for (const stopReason of ["stop", "toolUse", "length", "error", "aborted", "private-stop-reason"]) {
+      recorder.recordAgentEvent({ type: "message_end", message: { role: "assistant", stopReason,
+        content: [{ type: "thinking", thinking: "private-thought" }] } } as AgentSessionEvent);
+    }
     const run = await recorder.finalize({ runtime, diffSummary: "" });
     const trace = await readFile(run.tracePath, "utf8");
     const result = await readFile(run.resultPath, "utf8");
     expect(trace).toContain('"policyFailure"');
     expect(trace).toContain("denied-1");
+    const entries = trace.trim().split("\n").map((line) => JSON.parse(line) as { type: string; data?: Record<string, unknown> });
+    const toolData = (id: string) => entries.find((entry) => entry.type === "tool_end" && entry.data?.toolCallId === id)?.data;
+    expect(toolData("denied-1")).toMatchObject({ terminate: true });
+    expect(toolData("recoverable")).toMatchObject({ terminate: false });
+    expect(toolData("legacy")).not.toHaveProperty("terminate");
+    expect(toolData("malformed")).not.toHaveProperty("terminate");
+    expect(entries.filter((entry) => entry.type === "message_end").map((entry) => entry.data?.stopReason))
+      .toEqual(["stop", "toolUse", "length", "error", "aborted", undefined]);
+    for (const secret of ["private-terminate-value", "private-stop-reason", "private-thought"]) expect(trace).not.toContain(secret);
     for (const artifact of [trace, result]) {
       expect(artifact).toContain("disk-format");
       expect(artifact).toContain("format D:");

@@ -1,5 +1,12 @@
 # 仓库指南
 
+## 命令拒绝与继续执行（2026-09-20）
+
+- 当前 `PROMPT_POLICY_VERSION=5`，覆盖下文历史版本说明。`git-command.ts` 只放行可确认的标签查询（无参数、`-l`、`--list` 加普通模式），支持管道、`-C`、`--no-pager` 和带引号的 Git 可执行路径；同一识别逻辑检查 Git 写入与需审批的工作区操作。标签写入、未支持的参数及动态展开保守拒绝。不是完整 Shell 解析器或沙箱。
+- `CommandPolicyResult.onDeny` 区分 `continue` 与 `stop`：被识别的 Git 写入及不支持的标签调用继续拒绝，但向模型返回错误和合法替代操作；提权、系统操作、磁盘格式化及 Shell 关闭仍返回 `terminate=true` 终止信号。整条命令先检查高风险拒绝，再检查 Git 和审批规则，查询例外不能遮蔽其他风险。
+- `recorder.ts` 仅在工具结果明确提供布尔值时保存 `tool_end.data.terminate`，仅对白名单内的 assistant `stopReason` 保存 `message_end.data.stopReason`；不存任意 details、模型正文或思维。历史缺失字段保持未知，不补写旧产物或哈希。
+- 回归测试用本机模拟 HTTP 驱动真实 Pi 循环，验证被拒命令不执行、可恢复错误后能调用合法工具、高风险仍停止。测试通过不代表真实模型一定继续修复或 SWE 得分提高；使用新策略的实验必须独立记录。
+
 ## 验证修复闭环（2026-09-17）
 
 - 新 CLI 任务（普通交互、record）默认 `maxRepairAttempts=2`，`--max-repair-attempts 0..5` 覆盖 TaskSpec，0 关闭；只读、replay 和经验管理命令拒绝覆盖。历史 TaskSpec 缺字段仍为零次，解析不得补字段改变哈希。
