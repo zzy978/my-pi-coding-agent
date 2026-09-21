@@ -12,6 +12,7 @@ export interface SynthesisInput {
   model: { provider: string; id: string };
   dataDirectory: string;
   modelConfig?: ModelConfig;
+  reasoning?: "low" | "high";
 }
 
 export interface SynthesisResponse { text: string; usage?: RunUsage; error?: string }
@@ -58,7 +59,7 @@ export async function completeExperienceStage(input: SynthesisInput, material: u
       systemPrompt,
       messages: [{ role: "user", content: payload, timestamp: Date.now() }],
       tools: []
-    }, { toolChoice: "none", reasoning: "high", cacheRetention: "none", maxRetries: 0, timeoutMs: config.synthesisTimeoutMs, signal: controller.signal, maxTokens });
+    }, { toolChoice: "none", reasoning: input.reasoning ?? "high", cacheRetention: "none", maxRetries: 0, timeoutMs: config.synthesisTimeoutMs, signal: controller.signal, maxTokens });
     const usage: RunUsage = { input: result.usage.input, output: result.usage.output, cacheRead: result.usage.cacheRead, cacheWrite: result.usage.cacheWrite, total: result.usage.totalTokens, cost: result.usage.cost.total };
     if (result.stopReason !== "stop" || result.content.some((item) => item.type === "toolCall")) {
       return { text: "", usage, error: redactSensitiveText(`Generator did not return a complete text answer (${result.stopReason}). ${result.errorMessage ?? ""}`).slice(0, 2_000) };

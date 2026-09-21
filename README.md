@@ -433,6 +433,8 @@ SWE-bench Verified Mini 的两轮同题实验见 [运行指南](docs/swe-mini-r0
 
 冻结 Mini 经验库的新任务泛化实验见 [40题双组运行指南](docs/swe-holdout.md)。入口为 `npm run benchmark:swe-holdout -- catalog|prepare|run|status`；原仓库新题20道、新仓库题20道，每题两组共80次新运行，任务与Mini不重合，实验期间不更新经验库。
 
+经验检索 V2 的独立描述、适用性筛选、零注入与历史配对诊断见 [检索 V2 指南](docs/swe-retrieval-v2.md)。入口为 `npm run benchmark:swe-retrieval -- run|status|report [source-root] [output-root]`。`run` 会调用文本模型但不执行修复任务；`status` 查看缓存状态，`report` 重算已有检查点与人工标签，二者不调用模型。V1 产物保持不变，模型评审和人工指标分别报告，不能把相关性诊断当作修复收益。
+
 ### 实验模型阶段预算
 
 内部 `runExperiment()` API 支持 `promptTimeoutMs`（1–3,600,000 毫秒，默认 900,000）。例如 `promptTimeoutMs: 45 * 60 * 1000` 将每个对照臂和候选臂都设为 45 分钟。预算包括模型生成及其工具调用，不包括模型返回后的宿主最终验证。新实验保存统一预算，各臂和回放记录相同值；缺少该字段的旧实验仍按历史 15 分钟解释，读取时不补写字段或改变哈希。当前 CLI 未增加对应选项。

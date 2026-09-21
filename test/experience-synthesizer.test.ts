@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { synthesizeExperience, type SynthesisInput } from "../src/experience/synthesizer.js";
+import { completeExperienceStage, synthesizeExperience, type SynthesisInput } from "../src/experience/synthesizer.js";
 import { readModelConfig } from "../src/model-config.js";
 
 type Model = ReturnType<ModelRuntime["getAvailableSnapshot"]>[number];
@@ -25,6 +25,15 @@ const input: SynthesisInput = {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("isolated experience synthesis", () => {
+  it("allows bounded retrieval judgments to use low reasoning while synthesis stays high by default", async () => {
+    await completeExperienceStage({ ...input, reasoning: "low" }, { candidates: [] }, "Judge applicability", () => Promise.resolve({
+      getAvailableSnapshot: () => [model], completeSimple: (_model, context, options) => {
+        expect(options).toMatchObject({ reasoning: "low", toolChoice: "none", maxRetries: 0 });
+        expect(context.tools).toEqual([]);
+        return Promise.resolve(answer);
+      }
+    }));
+  });
   it("uses a frozen batch configuration instead of later environment edits", async () => {
     const frozen = readModelConfig({ path: null, env: { PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS: "321" } });
     vi.stubEnv("PICODE_SYNTHESIS_MAX_OUTPUT_TOKENS", "789");
