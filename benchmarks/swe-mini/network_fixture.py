@@ -44,6 +44,11 @@ def configure_network_fixture(spec, repo):
 
 
 def check_fixture_result(result, repo, output):
+    # Patch rejection happens before eval.sh can configure the network fixture.
+    if (result.get("completed") is True and result.get("resolved") is False
+            and result.get("officialCompleted") is False
+            and result.get("failureKind") == "patch_apply"):
+        return result
     if repo == "psf/requests" and "SCORER_TARPIT_CONNECT_TIMEOUT_OK" not in output.splitlines():
         return dict(result, completed=False, resolved=False, failureKind="network_fixture")
     return result

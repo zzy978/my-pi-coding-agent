@@ -12,6 +12,8 @@ import { collectDiagnostics, formatDiagnostics } from "./diagnostics.js";
 import { executeControlledRun } from "./evaluation/runner.js";
 import { listRunBundles, loadRunBundle } from "./evaluation/store.js";
 import { createReplayPlan } from "./evaluation/replay.js";
+import { selectReplayExperience } from "./evaluation/replay-experience.js";
+import { readModelConfig } from "./model-config.js";
 import { assertRecordableCommands } from "./evaluation/redaction.js";
 import { ensureDataDirectories, getDataDirectory, type DataDirectories } from "./runtime/data-dir.js";
 import { handleLearningManagement } from "./learning-cli.js";
@@ -37,6 +39,8 @@ Options:
       --list-runs         List recorded controlled runs
       --show-run <runId>  Show a recorded manifest and result
       --replay <runId>    Replay a run from its recorded baseline in a fresh worktree
+      --replay-experience auto 按原任务检索候选并冻结本次回放的注入决策
+      --replay-candidate <id> 限定上述检索的候选池（可重复；默认同仓库有效晋升池）
       --analyze-run <id>  筛选并复盘成功或失败 run（可能调用模型）
       --review-mode <mode> proposer（默认）、critic 或 compare（同批提案对比）
       --min-success-tool-calls <n> 成功运行筛选阈值，默认 6，范围 0–10000
@@ -45,7 +49,7 @@ Options:
       --list-experiences 列出经验
       --show-experience <id> 查看经验、生成状态与候选 ID
       --experiment <runId> 对冻结任务执行新鲜配对实验（会调用模型）
-      --candidate <id>   指定实验候选；不修改普通 record/replay
+      --candidate <id>   指定配对实验候选
       --pairs <1..20>    配对次数，默认 3（共 6 次模型任务）
       --list-experiments 列出实验
       --show-experiment <id> 查看实验结果与成本
@@ -127,6 +131,13 @@ async function runControlled(
   const replayPlan = original
     ? createReplayPlan(original.manifest, options.shellExplicit ? options.shellEnabled : undefined)
     : undefined;
+  if (options.replayExperience && original &&
+    (original.manifest.kind !== "run" || original.manifest.experiment || original.manifest.replayExperience)) {
+    throw new Error("--replay-experience auto requires a plain original run; replay and experiment evidence are frozen");
+  }
+  if (options.replayExperience && original && !original.manifest.task.content.verify.length) {
+    throw new Error("--replay-experience auto requires a source run with a configured verifier");
+  }
   const sourceRepository = replayPlan?.sourceRepository ?? options.workspace;
   if (!existsSync(sourceRepository)) throw new Error(`Workspace does not exist: ${sourceRepository}`);
   const task = replayPlan?.task ?? await taskFromOptions(options);
@@ -178,10 +189,24 @@ async function runControlled(
   }
   let runtimeDisposed = false;
   try {
+    let replayExperience = replayPlan?.replayExperience;
+    if (options.replayExperience && original) {
+      console.error("正在按原任务选择回放经验……");
+      try {
+        replayExperience = await selectReplayExperience(original.manifest, dataDirectory,
+          options.replayCandidateIds, readModelConfig());
+      } catch (error) {
+        runtime.dispose();
+        runtimeDisposed = true;
+        await discardManagedWorkspace(workspace);
+        throw error;
+      }
+    }
     const finalized = await executeControlledRun({
       kind: original ? "replay" : "run",
       ...(original ? { replayOf: original.manifest.runId } : {}),
       ...(replayPlan?.experiment ? { experiment: replayPlan.experiment } : {}),
+      ...(replayExperience ? { replayExperience } : {}),
       runtime,
       task,
       workspace,
@@ -204,6 +229,8 @@ async function runControlled(
       `Run ID: ${finalized.manifest.runId}`,
       `Status: ${finalized.result.status}`,
       `Artifacts: ${finalized.directory}`,
+      ...(finalized.manifest.replayExperience ? [`Experience: ${finalized.manifest.replayExperience.status}`,
+        `Selected IDs: ${finalized.manifest.replayExperience.selectedIds.join(", ") || "none"}`] : []),
       ...(finalized.comparisonPaths ? [`Comparison: ${finalized.comparisonPaths.markdownPath}`] : [])
     ].join("\n"));
     return finalized.result.status === "verification_passed" ? 0 : 1;

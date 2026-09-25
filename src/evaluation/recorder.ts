@@ -18,6 +18,7 @@ import {
   sha256Json,
   type RunKind,
   type RunExperimentContext,
+  type ReplayExperienceContext,
   type RunManifest,
   type RunResult,
   type RunUsage,
@@ -33,6 +34,7 @@ import {
 
 interface RecorderOptions {
   experiment?: RunExperimentContext;
+  replayExperience?: ReplayExperienceContext;
   kind: RunKind;
   replayOf?: string;
   task: TaskSpec;
@@ -119,8 +121,9 @@ export class RunRecorder {
     const task = cloneTask(options.task);
     const runId = randomUUID();
     const manifest = parseRunManifest({
-      schemaVersion: options.experiment ? 2 : EVALUATION_SCHEMA_VERSION,
+      schemaVersion: options.replayExperience ? 3 : options.experiment ? 2 : EVALUATION_SCHEMA_VERSION,
       ...(options.experiment ? { experiment: options.experiment } : {}),
+      ...(options.replayExperience ? { replayExperience: options.replayExperience } : {}),
       runId,
       kind: options.kind,
       ...(options.replayOf ? { replayOf: options.replayOf } : {}),

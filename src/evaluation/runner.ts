@@ -11,10 +11,11 @@ import { RunRecorder, type FinalizedRun } from "./recorder.js";
 import { sanitizeVerificationReport } from "./redaction.js";
 import { formatRepairPrompt, repairStopReason } from "../verifier/repair.js";
 import { writeJsonAtomic } from "./store.js";
-import { EXPERIMENT_PROMPT_TIMEOUT_MS, type RunKind, type RunExperimentContext } from "./schema.js";
+import { EXPERIMENT_PROMPT_TIMEOUT_MS, type RunKind, type RunExperimentContext, type ReplayExperienceContext } from "./schema.js";
 
 interface ControlledRunOptions {
   experiment?: RunExperimentContext;
+  replayExperience?: ReplayExperienceContext;
   signal?: AbortSignal;
   kind: RunKind;
   replayOf?: string;
@@ -69,6 +70,7 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
   options = { ...options, task: structuredClone(options.task) };
   const recorder = await RunRecorder.create({
     ...(options.experiment ? { experiment: options.experiment } : {}),
+    ...(options.replayExperience ? { replayExperience: options.replayExperience } : {}),
     kind: options.kind,
     ...(options.replayOf ? { replayOf: options.replayOf } : {}),
     task: options.task,
@@ -106,7 +108,7 @@ export async function executeControlledRun(options: ControlledRunOptions): Promi
     }
     options.onStatus?.(`Run ${recorder.manifest.runId}: agent`);
     const basePrompt = formatTaskPrompt(options.task, options.task.objective);
-    const candidate = recorder.manifest.experiment?.candidate;
+    const candidate = recorder.manifest.experiment?.candidate ?? recorder.manifest.replayExperience?.candidate;
     let prompt = candidate ? renderCandidatePrompt(basePrompt, candidate) : basePrompt;
     let agentElapsedMs = 0;
     const limit = options.task.maxRepairAttempts ?? 0;

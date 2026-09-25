@@ -26,6 +26,8 @@ export interface CliOptions {
   listRuns: boolean;
   showRunId?: string;
   replayRunId?: string;
+  replayExperience?: "auto";
+  replayCandidateIds: string[];
   json: boolean;
   doctor: boolean;
   diagnostics: boolean;
@@ -68,6 +70,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   let listRuns = false;
   let showRunId: string | undefined;
   let replayRunId: string | undefined;
+  let replayExperience: "auto" | undefined;
+  const replayCandidateIds: string[] = [];
   let json = false;
   let doctor = false;
   let diagnostics = false;
@@ -160,6 +164,22 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
         replayRunId = takeValue(args, index, arg);
         index += 1;
         break;
+      case "--replay-experience": {
+        const value = takeValue(args, index, arg);
+        if (replayExperience || value !== "auto") throw new CliUsageError("--replay-experience accepts auto once");
+        replayExperience = "auto";
+        index += 1;
+        break;
+      }
+      case "--replay-candidate": {
+        const value = takeValue(args, index, arg);
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(value)) throw new CliUsageError("Invalid --replay-candidate ID");
+        if (replayCandidateIds.includes(value)) throw new CliUsageError("duplicate --replay-candidate ID");
+        if (replayCandidateIds.length >= 20) throw new CliUsageError("--replay-candidate accepts at most 20 IDs");
+        replayCandidateIds.push(value);
+        index += 1;
+        break;
+      }
       case "--json":
         json = true;
         break;
@@ -256,6 +276,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
   }
   if (managementModes > 1) throw new CliUsageError("Use only one of --list-runs, --show-run, or --replay");
   if (record && managementModes > 0) throw new CliUsageError("--record cannot be combined with run management options");
+  if (replayExperience && !replayRunId) throw new CliUsageError("--replay-experience requires --replay");
+  if (replayCandidateIds.length && replayExperience !== "auto") throw new CliUsageError("--replay-candidate requires --replay-experience auto");
   if (noSetup && setupCommands.length > 0) throw new CliUsageError("--setup cannot be combined with --no-setup");
   if (record && !task && !taskFile) throw new CliUsageError("--record requires --task or --task-file");
   if (record && (legacyInPlace || continueSession)) throw new CliUsageError("--record requires a fresh managed worktree");
@@ -328,6 +350,8 @@ export function parseCliArgs(args: string[], cwd = process.cwd()): CliOptions {
     listRuns,
     ...(showRunId ? { showRunId } : {}),
     ...(replayRunId ? { replayRunId } : {}),
+    ...(replayExperience ? { replayExperience } : {}),
+    replayCandidateIds,
     json,
     doctor,
     diagnostics,

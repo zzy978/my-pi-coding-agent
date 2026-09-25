@@ -6,9 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RunRecorder } from "../src/evaluation/recorder.js";
 import { createApprovalGatedShellOperations } from "../src/policy/safe-tools.js";
 import { executeControlledRun } from "../src/evaluation/runner.js";
+import { createReplayPlan } from "../src/evaluation/replay.js";
+import { sha256Text } from "../src/evaluation/schema.js";
 import { loadRunBundle } from "../src/evaluation/store.js";
+import { renderCandidatePrompt } from "../src/experience/candidate.js";
 import type { ControlledPiRuntime } from "../src/runtime/controlled-pi-runtime.js";
-import { parseTaskSpec } from "../src/task/task-spec.js";
+import { formatTaskPrompt, parseTaskSpec } from "../src/task/task-spec.js";
 import { discardManagedWorkspace, prepareWorkspace } from "../src/workspace/git.js";
 import { initializeGitRepository } from "./helpers/git-repository.js";
 
@@ -367,5 +370,54 @@ describe("controlled run and replay lifecycle", () => {
 
     await discardManagedWorkspace(originalWorkspace);
     await discardManagedWorkspace(replayWorkspace);
+  }, 30_000);
+
+  it("records a selected replay prompt and reports a single-run experience observation", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-replay-experience-"));
+    temporaryDirectories.push(parent);
+    const source = join(parent, "source");
+    const dataDirectory = join(parent, "data");
+    await initializeGitRepository(source);
+    const task = parseTaskSpec({ objective: "Create result.txt containing done", maxRepairAttempts: 0,
+      verify: ["node -e \"process.exit(require('fs').readFileSync('result.txt','utf8').trim()==='done'?0:1)\""] });
+    const originalWorkspace = await prepareWorkspace(source, { inPlace: false, dataDirectory });
+    const original = await executeControlledRun({ kind: "run", task, workspace: originalWorkspace, allowShell: false,
+      noSession: true, setup: { source: "disabled", commands: [] }, dataDirectory,
+      runtime: createFakeRuntime(originalWorkspace.workspace, () => writeFile(join(originalWorkspace.workspace, "result.txt"), "wrong\n")) });
+    expect(original.result.status).toBe("verification_failed");
+    const candidate = { id: "retrieved-one", kind: "strategy" as const, content: "Inspect the failing test first.",
+      contentSha256: sha256Text("Inspect the failing test first."), rendererVersion: 1 as const };
+    const selection = { mode: "auto" as const, status: "selected" as const, poolSha256: "d".repeat(64),
+      auditId: "audit-one", auditSha256: "e".repeat(64), selectedIds: ["candidate-one"], candidate,
+      effectivePromptSha256: sha256Text(renderCandidatePrompt(formatTaskPrompt(task, task.objective), candidate)) };
+    const replayWorkspace = await prepareWorkspace(source, { inPlace: false, dataDirectory,
+      baselineCommit: original.manifest.baselineCommit, branchPrefix: "replay" });
+    const replay = await executeControlledRun({ kind: "replay", replayOf: original.manifest.runId,
+      replayExperience: selection, task, workspace: replayWorkspace, allowShell: false, noSession: true,
+      setup: { source: "disabled", commands: [] }, dataDirectory, runtime: createFakeRuntime(replayWorkspace.workspace) });
+    expect(replay.manifest.schemaVersion).toBe(3);
+    expect(replay.manifest.replayExperience).toMatchObject({ status: "selected", selectedIds: ["candidate-one"] });
+    expect(capturedPrompts[1]).toContain(candidate.content);
+    expect(capturedPrompts[1]).toContain("<experience-guidance");
+    const comparison = JSON.parse(await readFile(join(replay.directory, "comparison.json"), "utf8")) as {
+      status: string; experienceObservation?: { outcome: string; eligible: boolean };
+    };
+    expect(comparison.status).toBe("not_comparable");
+    expect(comparison.experienceObservation).toMatchObject({ eligible: true, outcome: "observed_improvement" });
+
+    const frozen = createReplayPlan((await loadRunBundle(replay.manifest.runId, dataDirectory)).manifest);
+    const secondWorkspace = await prepareWorkspace(source, { inPlace: false, dataDirectory,
+      baselineCommit: frozen.baselineCommit, branchPrefix: "replay" });
+    const second = await executeControlledRun({ kind: "replay", replayOf: replay.manifest.runId,
+      ...(frozen.replayExperience ? { replayExperience: frozen.replayExperience } : {}),
+      task: frozen.task, workspace: secondWorkspace, allowShell: false, noSession: true,
+      setup: { source: "disabled", commands: [] }, dataDirectory, runtime: createFakeRuntime(secondWorkspace.workspace) });
+    expect(capturedPrompts[2]).toBe(capturedPrompts[1]);
+    expect(JSON.parse(await readFile(join(second.directory, "comparison.json"), "utf8"))).toMatchObject({
+      status: "verification_passed"
+    });
+    await discardManagedWorkspace(originalWorkspace);
+    await discardManagedWorkspace(replayWorkspace);
+    await discardManagedWorkspace(secondWorkspace);
   }, 30_000);
 });

@@ -182,6 +182,17 @@ pi-agent-tui --replay <runId>
 
 `--replay` 从原 manifest 固定的 Git commit 创建另一个全新 worktree，并恢复 TaskSpec、verifier、模型、thinking level 和工具策略。回放沿用原运行是否启用 Shell 的记录，不会因为当前默认值而升级或降低工具权限；显式且冲突的 `--no-shell`/兼容参数 `--unsafe-shell` 会被拒绝。为了保持可比性，受控 record/replay 不加载当前机器上可能随时间变化的 Extension、Skill、Prompt Template 和 Theme；完整资源发现只用于交互模式。
 
+需要探索“按任务选择经验”时，对**普通原始 run** 显式启用选择；不传 `--replay-candidate` 时使用同仓库有效晋升池，传入一个或多个 ID 时只在这些候选中选择，也可评估尚未晋升的候选：
+
+```powershell
+pi-agent-tui --replay SOURCE_RUN_ID --replay-experience auto
+pi-agent-tui --replay SOURCE_RUN_ID --replay-experience auto --replay-candidate CANDIDATE_ID
+```
+
+此入口要求原任务配置验证器，使用原任务目标做检索和适用性判断；结果可能是注入、零注入或检索失败后零注入。选择审计写入 `reports/retrieval/<审计ID>.json`；新 replay 的 v3 manifest 保存候选池哈希、审计哈希、选择状态、所选 ID、候选快照与有效提示哈希。对该 replay 再运行普通 `--replay` 会复用冻结的选择，不重新调用检索模型。显式选择会增加索引/适用性模型请求的费用；没有额外审批时不会自动晋升候选。
+
+`comparison.json/.md` 把经验介入列为单次观察：若只有经验输入变化且基线、任务、模型、策略、上下文和验证器一致，报告通过状态的观察改善、退化或无收益；若没有注入则为 `not_evaluated`，其他条件漂移为 `invalid_isolation`。经验介入不是严格的同提示回放，因此原有 `status` 仍为 `not_comparable`。一次原始运行加一次 replay 不能证明经验导致变化；需要有效性证据时继续使用新鲜对照与候选配对实验。
+
 每次运行在数据目录的 `runs/<runId>/` 下生成：
 
 ```text
@@ -240,7 +251,7 @@ pi-agent-tui --show-review-comparison CRITIC_EXPERIENCE_ID --json
 
 新生成的候选会自动建立独立检索描述，保存在 `experiences/<经验ID>/retrieval/<候选ID>.json`，包含触发条件、排除条件、适用阶段及中英文关键词，并绑定原候选和提示版本。索引失败会记录状态并保留原经验，不自动重复收费；只读 `--show-experience` 可查看状态。旧的有效晋升候选首次使用时补建索引，不回写 `experience.json`。索引生成和每轮有召回候选时的适用性检查会额外调用文本模型，使用 `PICODE_SYNTHESIS_*` 上限。选择理由、引句、用量和错误保存于 `reports/retrieval/<审计ID>.json`。
 
-普通 TUI 使用当前模型筛选；record/replay 和显式候选配对保持冻结候选，不自动检索。当前只在每轮初始阶段判断，需要读代码或出现特定错误后才能适用的经验暂不注入；模型判断仍可能出错。
+普通 TUI 使用当前模型筛选；普通 record/replay 和显式候选配对保持冻结候选，只有显式 `--replay-experience auto` 才在 replay 前重新检索。当前只在每轮初始阶段判断，需要读代码或出现特定错误后才能适用的经验暂不注入；模型判断仍可能出错。
 
 新经验产物为 v2，旧 v1 仍可读取。新录制的工具结果只保留最多 1000 字符的脱敏文本摘要，不保留图片、任意 details 或思维链；复盘材料包含运行用量和耗时，继续限制为 80 条、32000 字符，并优先保留验证诊断和失败恢复片段。现有 `diffSummary` 仅为变更统计和文件列表，不是完整代码补丁。截断与缺失都会限制可提出的结论。
 
@@ -261,7 +272,7 @@ pi-agent-tui --show-experiment EXPERIMENT_ID --json
 
 `observed_improvement` / `no_observed_gain` / `observed_regression` 表示配对中观察到的结果；不完整运行、证据不足与配置不一致分别归入 `inconclusive` 或 `invalid_isolation`。少量配对不能证明统计显著性或跨任务普遍收益。
 
-普通 record/replay 不加载候选。实验运行的 v2 manifest 额外冻结候选文本、渲染版本与有效 prompt 哈希；对其 `--replay TRIAL_RUN_ID` 会恢复同一候选。旧 v1 运行仍可读取和回放。
+普通 record/replay 不自动加载候选。实验运行的 v2 manifest 冻结候选文本、渲染版本与有效 prompt 哈希；对其 `--replay TRIAL_RUN_ID` 会恢复同一候选，不能在实验臂上重新选择。显式选择的 replay 使用 v3 manifest；旧 v1/v2 运行仍可读取和回放。
 
 ### 晋升、使用与撤销
 
@@ -433,6 +444,8 @@ MIT
 新 trace 在工具结果明确提供布尔值时记录 `tool_end.data.terminate`，并在模型消息结束时记录白名单内的 `message_end.data.stopReason`。字段缺失表示未记录，不能当作 `false` 或正常结束。这次变更将运行策略版本提升为 `5`；使用新策略重跑只能算新运行，不修改历史记录，也不能当作旧策略的等价复现。
 
 ### SWE-bench Mini 同题经验复用
+
+需要补充多仓库经验时，可使用 [SWE-Verified 单轮运行](docs/swe-verified-single-round.md)：`npm run benchmark:swe-verified -- catalog|run|status <批次目录>`。固定选取 50 道未见题，每题只运行一次并按证据生成 proposer 经验；成功至少 6 次工具调用，不启用 critic。
 
 SWE-bench Verified Mini 的两轮同题实验见 [运行指南](docs/swe-mini-r0-b.md)。入口为 `npm run benchmark:swe-mini -- prepare|run|status`，流程为 R0 → 逐题复盘 → 冻结经验 → B；共 100 次任务执行，复盘另计。两轮均使用独立 Linux 容器的 Bash 工具，官方评分结果与 token 分别记录，不作为跨任务晋升或泛化收益证据。
 

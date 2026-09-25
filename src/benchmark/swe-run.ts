@@ -61,7 +61,7 @@ export async function runSweTask(options: {
       }
     });
     const session = runtime.session;
-    const timer = setTimeout(() => { executionError = "Model task phase timed out"; outcome.usageComplete = false; session.abortRetry(); session.abortCompaction(); void session.abort().catch(() => undefined); }, config.taskTimeoutMs);
+    const timer = config.taskTimeoutMs > 0 ? setTimeout(() => { executionError = "Model task phase timed out"; outcome.usageComplete = false; session.abortRetry(); session.abortCompaction(); void session.abort().catch(() => undefined); }, config.taskTimeoutMs) : undefined;
     try { await session.prompt(prompt); }
     catch (error) { executionError = redactSensitiveText(error instanceof Error ? error.message : String(error)); outcome.usageComplete = false; }
     finally { clearTimeout(timer); unsubscribe(); }

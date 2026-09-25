@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "benchmark:swe-mini": "tsx src/benchmark/swe-mini-cli.ts",
+    "benchmark:swe-verified": "tsx src/benchmark/swe-verified-cli.ts",
     "benchmark:swe-holdout": "tsx src/benchmark/swe-holdout-cli.ts",
     "benchmark:swe-retrieval": "tsx src/benchmark/swe-retrieval-cli.ts",
     "benchmark:exercism": "tsx src/benchmark/exercism-cli.ts",

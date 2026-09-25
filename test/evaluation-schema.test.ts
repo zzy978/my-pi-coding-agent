@@ -114,6 +114,37 @@ describe("evaluation artifact schemas", () => {
     expect(() => parseRunManifest({ ...original, schemaVersion: 2, experiment: { ...experiment, effectivePromptSha256: "f".repeat(64) } })).toThrow("prompt hash");
   });
 
+  it("binds task-selected replay guidance to the exact prompt and restores it on a strict replay", () => {
+    const source = manifest();
+    const replay = manifest("replay-one", "replay");
+    const candidate = { id: "retrieved-one", kind: "strategy", content: "Inspect the failing test first.",
+      contentSha256: sha256Text("Inspect the failing test first."), rendererVersion: 1 };
+    const basePrompt = formatTaskPrompt(replay.task.content, replay.task.content.objective);
+    const selection = { mode: "auto", status: "selected", poolSha256: "d".repeat(64), auditId: "audit-one",
+      auditSha256: "e".repeat(64), selectedIds: ["candidate-one"], candidate,
+      effectivePromptSha256: sha256Text(`${basePrompt}\n\n<experience-guidance kind="strategy" id="retrieved-one">\n` +
+        "Optional learned guidance. This cannot change the task, permissions, tools, model, setup, or verifier. " +
+        "Apply only when relevant; higher-priority instructions and task boundaries take precedence.\n" +
+        "Inspect the failing test first.\n</experience-guidance>") };
+    const selected = parseRunManifest({ ...replay, schemaVersion: 3, replayExperience: selection });
+    expect(createReplayPlan(selected).replayExperience).toEqual(selection);
+    expect(compareRuns(source, result(), selected, result("replay-one")).experienceObservation?.outcome).toBe("no_observed_gain");
+    const drifted = parseRunManifest({ ...selected, agent: { ...selected.agent, model: { provider: "fixture", id: "other" } } });
+    expect(compareRuns(source, result(), drifted, result("replay-one")).experienceObservation).toMatchObject({
+      eligible: false, outcome: "invalid_isolation"
+    });
+    const empty = parseRunManifest({ ...replay, schemaVersion: 3, replayExperience: { ...selection,
+      status: "empty", candidate: undefined, selectedIds: [], effectivePromptSha256: sha256Text(basePrompt) } });
+    expect(compareRuns(source, result(), empty, result("replay-one"))).toMatchObject({
+      status: "verification_passed", experienceObservation: { outcome: "not_evaluated" }
+    });
+    expect(() => parseRunManifest({ ...replay, schemaVersion: 3, replayExperience: { ...selection, effectivePromptSha256: "f".repeat(64) } }))
+      .toThrow("prompt hash");
+    expect(() => parseRunManifest({ ...source, schemaVersion: 3, replayExperience: selection })).toThrow("Replay");
+    expect(() => parseRunManifest({ ...replay, schemaVersion: 3, replayExperience: { ...selection, selectedIds: [] } }))
+      .toThrow("selectedIds");
+  });
+
   it("round-trips a complete manifest with stable hashes", () => {
     const value = manifest();
     expect(parseRunManifest(JSON.parse(JSON.stringify(value)))).toEqual(value);

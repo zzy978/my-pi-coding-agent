@@ -23,9 +23,21 @@ export interface RunExperimentContext {
   promptTimeoutMs?: number;
 }
 
+export interface ReplayExperienceContext {
+  mode: "auto";
+  status: "selected" | "empty" | "failed";
+  poolSha256: string;
+  auditId: string;
+  auditSha256: string;
+  selectedIds: string[];
+  candidate?: CandidateSnapshot;
+  effectivePromptSha256: string;
+}
+
 export interface RunManifest {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   experiment?: RunExperimentContext;
+  replayExperience?: ReplayExperienceContext;
   runId: string;
   kind: RunKind;
   replayOf?: string;
@@ -115,6 +127,13 @@ export interface RunComparison {
   errors: {
     original: { count: number; retries: number; summaries: string[] };
     replay: { count: number; retries: number; summaries: string[] };
+  };
+  experienceObservation?: {
+    eligible: boolean;
+    outcome: "observed_improvement" | "observed_regression" | "no_observed_gain" | "not_evaluated" | "inconclusive" | "invalid_isolation";
+    selectedIds: string[];
+    auditId: string;
+    reason: string;
   };
 }
 
@@ -282,7 +301,7 @@ function parseVerificationReport(value: unknown): VerificationReport {
 
 export function parseRunManifest(value: unknown): RunManifest {
   const record = objectValue(value, "manifest");
-  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2 && record.schemaVersion !== 3) {
     throw new EvaluationArtifactError(`Unsupported manifest schemaVersion: ${String(record.schemaVersion)}`);
   }
   const runId = assertRunId(record.runId);
@@ -350,12 +369,23 @@ export function parseRunManifest(value: unknown): RunManifest {
   if (record.schemaVersion === 1 && record.experiment !== undefined) {
     throw new EvaluationArtifactError("Experimental metadata requires manifest version 2");
   }
+  if (record.schemaVersion !== 3 && record.replayExperience !== undefined) {
+    throw new EvaluationArtifactError("Replay experience metadata requires manifest version 3");
+  }
+  if (record.schemaVersion === 3 && record.kind !== "replay") {
+    throw new EvaluationArtifactError("Replay experience metadata requires a Replay manifest");
+  }
+  if (record.schemaVersion === 3 && record.experiment !== undefined) {
+    throw new EvaluationArtifactError("Replay experience cannot replace an experimental arm");
+  }
   const experiment = record.schemaVersion === 2 ? parseRunExperiment(record.experiment, task) : undefined;
+  const replayExperience = record.schemaVersion === 3 ? parseReplayExperience(record.replayExperience, task) : undefined;
   if (experiment && agent.sessionMode !== "ephemeral") throw new EvaluationArtifactError("Experimental runs require ephemeral sessions");
 
   return {
     schemaVersion: record.schemaVersion,
     ...(experiment ? { experiment } : {}),
+    ...(replayExperience ? { replayExperience } : {}),
     runId,
     kind: record.kind,
     ...(record.replayOf === undefined ? {} : { replayOf: assertRunId(record.replayOf, "manifest.replayOf") }),
@@ -383,6 +413,36 @@ export function parseRunManifest(value: unknown): RunManifest {
     },
     contextFiles,
     verifier: { commands, sha256: verifierHash }
+  };
+}
+
+export function parseReplayExperience(value: unknown, task: TaskSpec): ReplayExperienceContext {
+  const record = objectValue(value, "manifest.replayExperience");
+  if (record.mode !== "auto") throw new EvaluationArtifactError("Replay experience mode must be auto");
+  if (record.status !== "selected" && record.status !== "empty" && record.status !== "failed") {
+    throw new EvaluationArtifactError("Replay experience status is invalid");
+  }
+  const selectedIds = stringArray(record.selectedIds, "replayExperience.selectedIds")
+    .map((id) => assertRunId(id, "replayExperience.selectedIds"));
+  if (selectedIds.length > 2 || new Set(selectedIds).size !== selectedIds.length) {
+    throw new EvaluationArtifactError("Replay experience selectedIds are invalid");
+  }
+  if ((record.status === "selected") !== (selectedIds.length > 0 && record.candidate !== undefined)) {
+    throw new EvaluationArtifactError("Replay experience selectedIds/candidate do not match status");
+  }
+  if (record.status !== "selected" && (selectedIds.length || record.candidate !== undefined)) {
+    throw new EvaluationArtifactError("Replay experience without selection cannot contain a candidate");
+  }
+  const candidate = record.candidate === undefined ? undefined : parseCandidateSnapshot(record.candidate);
+  const basePrompt = formatTaskPrompt(task, task.objective);
+  const prompt = candidate ? renderCandidatePrompt(basePrompt, candidate) : basePrompt;
+  const effectivePromptSha256 = assertSha256(record.effectivePromptSha256, "replayExperience.effectivePromptSha256");
+  if (sha256Text(prompt) !== effectivePromptSha256) throw new EvaluationArtifactError("Replay experience prompt hash does not match frozen instructions");
+  return {
+    mode: "auto", status: record.status, poolSha256: assertSha256(record.poolSha256, "replayExperience.poolSha256"),
+    auditId: assertRunId(record.auditId, "replayExperience.auditId"),
+    auditSha256: assertSha256(record.auditSha256, "replayExperience.auditSha256"), selectedIds,
+    ...(candidate ? { candidate } : {}), effectivePromptSha256
   };
 }
 

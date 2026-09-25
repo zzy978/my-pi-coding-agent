@@ -1,5 +1,7 @@
 import { redactSensitiveText } from "./redaction.js";
+import { sha256Text } from "./schema.js";
 import type { RunComparison, RunManifest, RunResult } from "./schema.js";
+import { formatTaskPrompt } from "../task/task-spec.js";
 
 function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -26,7 +28,13 @@ function configurationDifferences(original: RunManifest, replay: RunManifest): s
   if (!equalJson(original.contextFiles, replay.contextFiles)) differences.push("contextFiles");
   if (original.verifier.sha256 !== replay.verifier.sha256) differences.push("verifier");
   if (!equalJson(original.experiment, replay.experiment)) differences.push("experiment");
+  if (!equalJson(original.replayExperience, replay.replayExperience)) differences.push("replayExperience");
   return differences;
+}
+
+function effectivePromptHash(manifest: RunManifest): string {
+  return manifest.experiment?.effectivePromptSha256 ?? manifest.replayExperience?.effectivePromptSha256 ??
+    sha256Text(formatTaskPrompt(manifest.task.content, manifest.task.content.objective));
 }
 
 function fileComparison(original: string[], replay: string[]): RunComparison["changedFiles"] {
@@ -51,8 +59,28 @@ export function compareRuns(
   const baselineSame = originalManifest.baselineCommit === replayManifest.baselineCommit;
   const taskSame = originalManifest.task.sha256 === replayManifest.task.sha256;
   const differences = configurationDifferences(originalManifest, replayManifest);
-  const criticalDifferences = differences.filter((difference) => difference !== "appVersion" && difference !== "sessionMode");
+  const samePrompt = effectivePromptHash(originalManifest) === effectivePromptHash(replayManifest);
+  const criticalDifferences = differences.filter((difference) => difference !== "appVersion" && difference !== "sessionMode" &&
+    !(difference === "replayExperience" && samePrompt));
   const comparable = baselineSame && taskSame && criticalDifferences.length === 0;
+  const selection = !originalManifest.replayExperience && !originalManifest.experiment ? replayManifest.replayExperience : undefined;
+  let experienceObservation: RunComparison["experienceObservation"];
+  if (selection) {
+    const selected = selection.status === "selected" && Boolean(selection.candidate);
+    const eligible = selected && originalManifest.kind === "run" && baselineSame && taskSame &&
+      differences.every((difference) => difference === "replayExperience") &&
+      Boolean(originalResult.verification?.configured && replayResult.verification?.configured);
+    const outcome = !selected ? "not_evaluated" : !eligible ? "invalid_isolation" :
+      originalResult.status === "execution_failed" || replayResult.status === "execution_failed" ? "inconclusive" :
+        originalResult.status !== "verification_passed" && replayResult.status === "verification_passed" ? "observed_improvement" :
+          originalResult.status === "verification_passed" && replayResult.status !== "verification_passed" ? "observed_regression" :
+            "no_observed_gain";
+    experienceObservation = { eligible: Boolean(eligible), outcome, selectedIds: [...selection.selectedIds],
+      auditId: selection.auditId,
+      reason: !selected ? "No experience was injected; selection status is " + selection.status :
+        !eligible ? "Baseline, task, verifier, or another execution condition differs" :
+          "One replay gives an observation, not a causal or statistically reliable effectiveness estimate" };
+  }
   return {
     schemaVersion: 1,
     createdAt,
@@ -94,7 +122,8 @@ export function compareRuns(
         retries: replayResult.retryCount,
         summaries: replayResult.errors.map((error) => redactSensitiveText(error))
       }
-    }
+    },
+    ...(experienceObservation ? { experienceObservation } : {})
   };
 }
 
@@ -125,6 +154,11 @@ export function comparisonMarkdown(comparison: RunComparison): string {
 - Same TaskSpec: ${comparison.task.same ? "yes" : "no"}
 - Original verification: ${comparison.verification.original}
 - Replay verification: ${comparison.verification.replay}
+${comparison.experienceObservation ? `- Experience selection: ${comparison.experienceObservation.outcome}
+- Selected candidate IDs: ${comparison.experienceObservation.selectedIds.length ? comparison.experienceObservation.selectedIds.join(", ") : "none"}
+- Selection audit: ${comparison.experienceObservation.auditId}
+- Interpretation: ${comparison.experienceObservation.reason}
+` : ""}
 
 ## Configuration differences
 

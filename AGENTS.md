@@ -199,3 +199,10 @@ npm run dev -- --revoke-candidate CANDIDATE_ID --approve
 - 普通任务选择审计位于 `reports/retrieval/`，记录任务哈希、有界引句/理由、索引用量和判定用量；引句可能覆盖短任务全文。不单独保存原始任务字段、完整配置、凭据或思维链。旧合格候选首次使用补索引，失败不静默重试。
 - 新 SWE holdout 默认目录 `swe-holdout-v2`；catalog 不请求模型，prepare/run 首次冻结 V2 索引和选择。后续运行复用；control 恒为空。旧 V1 批次及 record/replay/显式候选实验保持原冻结语义，不自动接入日常检索。
 - 索引及适用性使用独立 synthesis 上限并增加调用成本。mock/本机 HTTP 测试只证明接线和边界，不证明模型适用性判断正确或真实修复收益。
+
+## SWE-Verified 单轮批次更新（2026-09-21）
+
+- `benchmark:swe-verified -- catalog|run|status <批次目录>` 是独立的 50 题无经验运行与 proposer 复盘入口，不执行 B 轮；旧 Mini/holdout 入口不变。按固定 Verified revision、种子和历史题排除表选择，启动前要求覆盖全部 12 仓库。
+- 成功至少 6 次工具调用是该入口的硬门槛，低调用失败恢复也不能绕过；失败仍经已有证据分类，critic 关闭。新候选沿用自动独立检索描述，不自动晋升。
+- 每题在请求前写检查点；已有协议或运行产物但缺失状态时拒绝启动，未知付费中断不得自动重跑。源码、评分资料或模型漂移不得混入同批。
+- 每题按需拉取并绑定镜像、执行红/绿评分预检。批次所在盘低于 15 GiB 停止后续任务；若 Docker 数据在另一盘还须单独核查。只清理本任务容器，不自动删除历史镜像或卷。详见 `docs/swe-verified-single-round.md`。

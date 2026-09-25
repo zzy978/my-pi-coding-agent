@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getDataDirectories, getDataDirectory } from "../runtime/data-dir.js";
@@ -55,7 +56,19 @@ async function readJson(path: string, label: string): Promise<unknown> {
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-  await rename(temporary, path);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(temporary, path); return; }
+      catch (error) {
+        const transient = error instanceof Error && "code" in error && ["EPERM", "EACCES", "EBUSY"].includes(String(error.code));
+        if (!transient || attempt >= 8) throw error;
+        await delay(Math.min(25 * 2 ** attempt, 500));
+      }
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function createRunDirectory(manifest: RunManifest, dataDirectory = getDataDirectory()): Promise<string> {

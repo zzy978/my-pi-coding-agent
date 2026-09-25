@@ -50,6 +50,18 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("accepts task-based experience selection only as an explicit replay mode", () => {
+    const options = parseCliArgs(["--replay", "run-123", "--replay-experience", "auto",
+      "--replay-candidate", "candidate-one", "--replay-candidate", "candidate-two"]);
+    expect(options).toMatchObject({ replayRunId: "run-123", replayExperience: "auto",
+      replayCandidateIds: ["candidate-one", "candidate-two"] });
+    expect(() => parseCliArgs(["--replay-experience", "auto"])).toThrow("--replay");
+    expect(() => parseCliArgs(["--replay", "run-123", "--replay-candidate", "candidate-one"])).toThrow("--replay-experience auto");
+    expect(() => parseCliArgs(["--replay", "run-123", "--replay-experience", "invalid"])).toThrow("auto");
+    expect(() => parseCliArgs(["--replay", "run-123", "--replay-experience", "auto",
+      "--replay-candidate", "candidate-one", "--replay-candidate", "candidate-one"])).toThrow("duplicate");
+  });
+
   it("enables shell by default and supports an explicit opt-out", () => {
     expect(parseCliArgs(["repo"], resolve("fixture-root"))).toMatchObject({
       shellEnabled: true,

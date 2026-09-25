@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-import docker
+from evaluation_resources import EvaluationClient
 from datasets import load_dataset
 from huggingface_hub import HfApi
 from swebench.harness.test_spec.test_spec import make_test_spec
@@ -49,7 +49,7 @@ def evaluate(instance_id, patch_path, run_id):
     from network_fixture import configure_network_fixture, check_fixture_result
     configure_network_fixture(spec, row["repo"])
     # Images were pulled and pinned before model execution. Refuse tag drift.
-    client = docker.from_env()
+    client = EvaluationClient.from_env()
     pinned = json.loads((ROOT / "images.json").read_text())
     if client.images.get(spec.instance_image_key).id != pinned[instance_id]:
         raise ValueError("Evaluation image drift")
